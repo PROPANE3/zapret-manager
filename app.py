@@ -25,7 +25,7 @@ import webbrowser
 
 try:
     import tkinter as tk
-    from tkinter import ttk, filedialog, messagebox
+    from tkinter import ttk, filedialog
     import tkinter.font as tkfont
 except ImportError:
     print("tkinter не найден")
@@ -36,7 +36,7 @@ try:
 except ImportError:
     winreg = None
 
-APP_VERSION = "1.10.0"
+APP_VERSION = "1.11.0"
 APP_NAME = "Zapret Manager"
 APP_REPO = "PROPANE3/zapret-manager"
 APP_ID = "Flowseal.ZapretManager"
@@ -140,6 +140,27 @@ def apply_theme(name):
 
 THEME_KEYS = ("BG", "TITLEBAR_BG", "SIDEBAR", "CARD", "CARD2", "BORDER",
               "TEXT", "MUTED", "ACCENT", "ACCENT_HOVER", "ACCENT_DEEP", "ACCENT2")
+
+# Живой реестр кастомных виджетов (RButton, NiceScroll, DropMenu, StatusBadge):
+# у каждого есть .apply_theme(). WeakSet — погибшие сами выпадают.
+import weakref as _weakref
+THEMED = _weakref.WeakSet()
+THEME_REMAP = {}
+
+
+def track_themed(widget):
+    try:
+        THEMED.add(widget)
+    except Exception:
+        pass
+    return widget
+
+
+def remap_color(hexcolor):
+    try:
+        return THEME_REMAP.get(str(hexcolor).lower(), hexcolor)
+    except Exception:
+        return hexcolor
 
 
 # Красивые читаемые шрифты (фильтруются по наличию в системе)
@@ -812,6 +833,48 @@ def stop_winws():
     run_cmd(["taskkill", "/IM", "winws.exe", "/F"], timeout=8)
 
 
+def _split_win_args(args):
+    """Делит строку аргументов с учётом кавычек (пути с пробелами)."""
+    import shlex
+    try:
+        return shlex.split(args, posix=False)
+    except Exception:
+        return args.split()
+
+
+def start_winws_hidden(zapret_root, bat_name):
+    """Запуск конфига БЕЗ окон: winws.exe напрямую, без консоли и кнопки в таскбаре.
+
+    Раньше запускался .bat через cmd — оставалось свёрнутое окно winws
+    (консоль + кнопка «zapret: ...» в таскбаре). Теперь аргументы берутся
+    из bat (тот же парсер, что для службы) и winws стартует скрытым процессом.
+    Возвращает True, если процесс запущен.
+    """
+    try:
+        args, err = build_service_args(zapret_root, bat_name)
+        if not args:
+            return start_bat_minimized(zapret_root, bat_name)
+        exe = os.path.join(zapret_root, "bin", "winws.exe")
+        if not os.path.exists(exe):
+            return False
+        cmd = [exe] + [a.strip('"') for a in _split_win_args(args)]
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0  # SW_HIDE
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
+            subprocess, "DETACHED_PROCESS", 0)
+        subprocess.Popen(cmd, cwd=os.path.join(zapret_root, "bin"),
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         stdin=subprocess.DEVNULL, startupinfo=si,
+                         creationflags=flags)
+        return True
+    except Exception:
+        try:
+            return start_bat_minimized(zapret_root, bat_name)
+        except Exception:
+            return False
+
+
 def start_bat_minimized(zapret_root, bat_name):
     fp = os.path.join(zapret_root, bat_name)
     try:
@@ -851,6 +914,98 @@ def toplevel_hwnd(root):
     except Exception:
         pass
     return None
+
+
+_CHROME_STATE = {"cb": None, "old": None}
+
+
+def setup_borderless(root, titlebar_h=44, btn_reserve_px=150, border_px=8):
+    """Прячем системную шапку (для Win10, где DWM-тинт невозможен).
+
+    Убираем WS_CAPTION у ВНЕШНЕГО окна + отдаём WM_NCCALCSIZE 0 (неклиентской
+    области нет) + нативное перетаскивание/ресайз через WM_NCHITTEST.
+    Таскбар, кнопки, снап, тень сохраняются. Возвращает True при успехе.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        from ctypes import wintypes
+        LRESULT = getattr(wintypes, "LRESULT", ctypes.c_ssize_t)
+        user32 = ctypes.windll.user32
+        hwnd = toplevel_hwnd(root)
+        if not hwnd:
+            return False
+
+        style = user32.GetWindowLongW(hwnd, -16)
+        user32.SetWindowLongW(hwnd, -16, style & ~0x00C00000)
+        user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0020)
+
+        WM_NCCALCSIZE = 0x83
+        WM_NCHITTEST = 0x84
+        HTCLIENT, HTCAPTION = 1, 2
+        HTLEFT, HTRIGHT, HTTOP, HTBOTTOM = 10, 11, 12, 15
+        HTTOPLEFT, HTTOPRIGHT = 13, 14
+        HTBOTTOMLEFT, HTBOTTOMRIGHT = 16, 17
+        WNDPROCTYPE = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT,
+                                         wintypes.WPARAM, wintypes.LPARAM)
+        user32.DefWindowProcW.restype = LRESULT
+        user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT,
+                                          wintypes.WPARAM, wintypes.LPARAM]
+        user32.CallWindowProcW.restype = LRESULT
+        user32.CallWindowProcW.argtypes = [ctypes.c_void_p, wintypes.HWND,
+                                           wintypes.UINT, wintypes.WPARAM,
+                                           wintypes.LPARAM]
+        user32.GetWindowRect.argtypes = [wintypes.HWND,
+                                         ctypes.POINTER(wintypes.RECT)]
+
+        def _proc(h, msg, wp, lp):
+            if msg == WM_NCCALCSIZE:
+                if wp:
+                    return 0
+                return user32.DefWindowProcW(h, msg, wp, lp)
+            if msg == WM_NCHITTEST:
+                x = ctypes.c_short(lp & 0xFFFF).value
+                y = ctypes.c_short((lp >> 16) & 0xFFFF).value
+                rc = wintypes.RECT()
+                user32.GetWindowRect(h, ctypes.byref(rc))
+                if not user32.IsZoomed(h):
+                    b = border_px
+                    left = x < rc.left + b
+                    right = x >= rc.right - b
+                    top = y < rc.top + b
+                    bottom = y >= rc.bottom - b
+                    if top and left:
+                        return HTTOPLEFT
+                    if top and right:
+                        return HTTOPRIGHT
+                    if bottom and left:
+                        return HTBOTTOMLEFT
+                    if bottom and right:
+                        return HTBOTTOMRIGHT
+                    if left:
+                        return HTLEFT
+                    if right:
+                        return HTRIGHT
+                    if top:
+                        return HTTOP
+                    if bottom:
+                        return HTBOTTOM
+                if (y - rc.top) < titlebar_h and (rc.right - x) > btn_reserve_px:
+                    return HTCAPTION
+                return HTCLIENT
+            return user32.CallWindowProcW(_CHROME_STATE["old"], h, msg, wp, lp)
+
+        _CHROME_STATE["cb"] = WNDPROCTYPE(_proc)
+        if ctypes.sizeof(ctypes.c_void_p) == 8:
+            set_ptr = user32.SetWindowLongPtrW
+        else:
+            set_ptr = user32.SetWindowLongW
+        set_ptr.restype = ctypes.c_void_p
+        set_ptr.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
+        _CHROME_STATE["old"] = set_ptr(hwnd, -4, _CHROME_STATE["cb"])
+        return True
+    except Exception:
+        return False
 
 
 _VPN_RE = None
@@ -1423,7 +1578,7 @@ class CheckEngine:
             if log_cb:
                 log_cb(f"[{idx+1}/{total}] Запуск {bat} …")
             t0 = time.time()
-            start_bat_minimized(self.cfg["zapret_root"], bat)
+            start_winws_hidden(self.cfg["zapret_root"], bat)
             if not wait_winws_ready(6.0):
                 if log_cb:
                     log_cb(f"  {bat}: winws не запустился — пропуск")
@@ -1494,7 +1649,7 @@ class CheckEngine:
             if log_cb:
                 log_cb(f"[отсев {idx+1}/{total}] {bat} …")
             t0 = time.time()
-            start_bat_minimized(self.cfg["zapret_root"], bat)
+            start_winws_hidden(self.cfg["zapret_root"], bat)
             if not wait_winws_ready(4.0, fast=True):
                 if log_cb:
                     log_cb(f"  {bat}: winws не запустился — пропуск")
@@ -1540,7 +1695,7 @@ class CheckEngine:
             if log_cb:
                 log_cb(f"[финал {j+1}/{len(finalists)}] {bat} …")
             t0 = time.time()
-            start_bat_minimized(self.cfg["zapret_root"], bat)
+            start_winws_hidden(self.cfg["zapret_root"], bat)
             if not wait_winws_ready(6.0):
                 if log_cb:
                     log_cb(f"  {bat}: winws не запустился в финале")
@@ -1575,7 +1730,7 @@ class ScrollFrame(tk.Frame):
     def __init__(self, parent, bg=CARD, **kw):
         super().__init__(parent, bg=bg, **kw)
         self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0)
-        self.vsb = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.vsb = NiceScroll(self, command=self.canvas.yview)
         self.inner = tk.Frame(self.canvas, bg=bg)
         self.inner.bind("<Configure>", self._region)
         self.win = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
@@ -1624,7 +1779,7 @@ class ScrollFrame(tk.Frame):
             pass
 
     def _sync_width(self, e=None):
-        # NOTE: имя НЕ _w — Tk затирает self._w строкой- путём виджета!
+        # NOTE: ширина хранится в self._bw — имя self._w занято Tk (путь виджета)!
         try:
             self.canvas.itemconfig(self.win, width=self.canvas.winfo_width())
             self._region()
@@ -1650,6 +1805,455 @@ class ScrollFrame(tk.Frame):
             self.canvas.yview_scroll(steps, "units")
         except Exception:
             pass
+
+
+def _mix_hex(h1, h2, t):
+    """Смешать два #rrggbb цвета (t=0 -> h1)."""
+    try:
+        a = tuple(int(h1.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+        b = tuple(int(h2.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+        return "#%02x%02x%02x" % tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+    except Exception:
+        return h1
+
+
+class StatusBadge(tk.Canvas):
+    """Пилюля статуса в шапке: цветная точка + текст на тонированной подложке."""
+
+    def __init__(self, parent, **kw):
+        self._text = "статус…"
+        self._color = MUTED
+        try:
+            bg0 = parent.cget("background")
+        except Exception:
+            bg0 = BG
+        self._bg0 = bg0
+        kw.setdefault("highlightthickness", 0)
+        kw.setdefault("bd", 0)
+        super().__init__(parent, width=160, height=28, bg=bg0, **kw)
+        self._draw()
+        track_themed(self)
+
+    def set(self, text, color):
+        self._text = text or ""
+        self._color = color or MUTED
+        try:
+            _f = tkfont.Font(font=(FONT, 10))
+            self.configure(width=_f.measure(self._text) + 44)
+        except Exception:
+            pass
+        self._draw()
+
+    def _draw(self):
+        try:
+            self.delete("all")
+            w, h = int(self.cget("width")), 28
+            try:
+                bg0 = self.master.cget("background")
+            except Exception:
+                bg0 = self._bg0
+            pill = _mix_hex(bg0, self._color, 0.16)
+            r = h // 2 - 1
+            # скруглённая подложка
+            self.create_oval(2, 2, 2 + 2 * r, 2 + 2 * r, fill=pill, outline="")
+            self.create_oval(w - 2 - 2 * r, 2, w - 2, 2 + 2 * r, fill=pill, outline="")
+            self.create_rectangle(2 + r, 2, w - 2 - r, h - 2, fill=pill, outline="")
+            self.create_rectangle(2, 2 + r, w - 2, h - 2 - r, fill=pill, outline="")
+            cx = 16
+            self.create_oval(cx - 6, h // 2 - 6, cx + 6, h // 2 + 6,
+                             fill=self._color, outline="")
+            self.create_text(cx + 12, h // 2, text=self._text, fill=self._color,
+                             font=(FONT, 10, "bold"), anchor="w")
+        except Exception:
+            pass
+
+    def apply_theme(self):
+        self._color = remap_color(self._color)
+        try:
+            self.configure(bg=self.master.cget("background"))
+        except Exception:
+            pass
+        self._draw()
+
+
+class RButton(tk.Canvas):
+    """Кнопка-пилюля со скруглением. style: accent | ghost.
+
+    Цвета берутся из палитры в момент отрисовки; при живой смене темы
+    перерисовывается через THEMED.apply_theme().
+    """
+
+    def __init__(self, parent, text="", style="accent", command=None,
+                 font=None, pad_x=18, height=34, min_width=0,
+                 state="normal", **kw):
+        self._text = text
+        self._style = style if style in ("accent", "ghost") else "ghost"
+        self._command = command
+        self._font = font or (FONT, 10, "bold" if self._style == "accent" else "normal")
+        self._h = max(24, int(height))
+        self._pad = pad_x
+        self._enabled = (state != "disabled")
+        self._hover = False
+        self._pressed = False
+        try:
+            _f = tkfont.Font(font=self._font)
+            tw = _f.measure(text)
+        except Exception:
+            tw = len(text) * 8
+        w = max(min_width, tw + pad_x * 2, 44)
+        try:
+            bg0 = parent.cget("background")
+        except Exception:
+            bg0 = CARD
+        kw.setdefault("highlightthickness", 0)
+        kw.setdefault("bd", 0)
+        super().__init__(parent, width=int(w), height=self._h, bg=bg0, **kw)
+        self._bw = int(w)
+        self.bind("<Enter>", self._on_enter, add="+")
+        self.bind("<Leave>", self._on_leave, add="+")
+        self.bind("<ButtonPress-1>", self._on_press, add="+")
+        self.bind("<ButtonRelease-1>", self._on_release, add="+")
+        self.bind("<space>", lambda _e: self.invoke(), add="+")
+        self.bind("<Return>", lambda _e: self.invoke(), add="+")
+        try:
+            self.configure(takefocus=1)
+        except Exception:
+            pass
+        self._draw()
+        track_themed(self)
+
+    def _colors(self):
+        if not self._enabled:
+            return (CARD2, MUTED, BORDER)
+        if self._style == "accent":
+            bg = ACCENT_HOVER if (self._hover or self._pressed) else ACCENT
+            return (bg, "white", bg)
+        if self._pressed:
+            return (ACCENT_DEEP, TEXT, ACCENT_DEEP)
+        if self._hover:
+            return (BORDER, TEXT, ACCENT)
+        return (CARD2, TEXT, BORDER)
+
+    def _round_rect(self, x0, y0, x1, y1, r, fill, outline, width=1, tag=""):
+        self.create_rectangle(x0 + r, y0, x1 - r, y1, fill=fill,
+                              outline=outline if width else fill, width=width,
+                              tags=tag)
+        self.create_rectangle(x0, y0 + r, x1, y1 - r, fill=fill,
+                              outline=outline if width else fill, width=width,
+                              tags=tag)
+        for cx, cy in ((x0 + r, y0 + r), (x1 - r, y0 + r),
+                       (x0 + r, y1 - r), (x1 - r, y1 - r)):
+            self.create_oval(cx - r, cy - r, cx + r, cy + r, fill=fill,
+                             outline=outline if width else fill, width=width,
+                             tags=tag)
+        # швы между примитивами заливаем те же цвета
+        self.create_rectangle(x0 + r, y0 + 1, x1 - r, y1 - 1, fill=fill,
+                              outline="", tags=tag)
+        self.create_rectangle(x0 + 1, y0 + r, x1 - 1, y1 - r, fill=fill,
+                              outline="", tags=tag)
+
+    def _draw(self):
+        try:
+            self.delete("all")
+            bg, fg, edge = self._colors()
+            r = self._h // 2 - 1
+            self._round_rect(2, 2, self._bw - 2, self._h - 2, r, bg, edge,
+                             0 if self._style == "accent" and self._enabled else 1)
+            self.create_text(self._bw // 2, self._h // 2, text=self._text,
+                             fill=fg, font=self._font)
+            self.configure(cursor="hand2" if self._enabled else "arrow")
+        except Exception:
+            pass
+
+    def apply_theme(self):
+        try:
+            self.configure(bg=self.master.cget("background"))
+        except Exception:
+            pass
+        self._draw()
+
+    def _on_enter(self, _e=None):
+        if not self._enabled:
+            return
+        self._hover = True
+        self._draw()
+
+    def _on_leave(self, _e=None):
+        self._hover = False
+        self._pressed = False
+        self._draw()
+
+    def _on_press(self, _e=None):
+        if not self._enabled:
+            return
+        self._pressed = True
+        self._draw()
+
+    def _on_release(self, _e=None):
+        was = self._pressed and self._hover and self._enabled
+        self._pressed = False
+        self._draw()
+        if was and callable(self._command):
+            try:
+                self._command()
+            except Exception:
+                pass
+
+    def invoke(self):
+        if self._enabled and callable(self._command):
+            try:
+                self._command()
+            except Exception:
+                pass
+
+    def set_enabled(self, enabled):
+        self._enabled = bool(enabled)
+        self._draw()
+
+    def set_text(self, text):
+        self._text = text
+        try:
+            _f = tkfont.Font(font=self._font)
+            self._bw = max(_f.measure(text) + self._pad * 2, 44)
+            self.configure(width=self._bw)
+        except Exception:
+            pass
+        self._draw()
+
+    def config(self, **kw):
+        if "state" in kw:
+            self.set_enabled(kw.pop("state") != "disabled")
+        if "text" in kw:
+            self.set_text(kw.pop("text"))
+        if "command" in kw:
+            self._command = kw.pop("command")
+        if kw:
+            try:
+                super().configure(**kw)
+            except Exception:
+                pass
+
+    configure = config
+
+
+class NiceScroll(tk.Canvas):
+    """Тонкий скруглённый скроллбар. API как у ttk.Scrollbar: command=, .set()."""
+
+    def __init__(self, parent, command=None, width=12, **kw):
+        self._command = command
+        self._bw = max(8, int(width))
+        self._first, self._last = 0.0, 1.0
+        self._hover = False
+        self._dragging = False
+        self._grab = 0
+        try:
+            bg0 = parent.cget("background")
+        except Exception:
+            bg0 = BG
+        kw.setdefault("highlightthickness", 0)
+        kw.setdefault("bd", 0)
+        super().__init__(parent, width=self._bw, bg=bg0, **kw)
+        self.bind("<Configure>", lambda _e: self._draw(), add="+")
+        self.bind("<Enter>", lambda _e: self._set_hover(True), add="+")
+        self.bind("<Leave>", lambda _e: self._set_hover(False), add="+")
+        self.bind("<ButtonPress-1>", self._press, add="+")
+        self.bind("<B1-Motion>", self._drag, add="+")
+        self.bind("<ButtonRelease-1>", lambda _e: self._end_drag(), add="+")
+        track_themed(self)
+
+    def set(self, first, last):
+        try:
+            self._first = max(0.0, min(1.0, float(first)))
+            self._last = max(0.0, min(1.0, float(last)))
+        except Exception:
+            self._first, self._last = 0.0, 1.0
+        self._draw()
+
+    def _geom(self):
+        h = max(1, self.winfo_height())
+        pad = 3
+        track_h = max(1, h - pad * 2)
+        fh = max(0.0, self._last - self._first)
+        if fh >= 1.0:
+            return pad, track_h, pad, pad + track_h
+        th = max(30, track_h * fh)
+        span = max(1e-6, 1.0 - fh)
+        y0 = pad + (track_h - th) * (self._first / span)
+        return pad, track_h, y0, y0 + th
+
+    def _thumb_color(self):
+        if self._dragging or self._hover:
+            return ACCENT
+        return BORDER
+
+    def _draw(self):
+        try:
+            self.delete("all")
+            pad, track_h, y0, y1 = self._geom()
+            x0, x1 = 2, self._bw - 2
+            r = (x1 - x0) // 2
+            col = self._thumb_color()
+            self.create_oval(x0, y0, x0 + 2 * r, y0 + 2 * r, fill=col, outline="")
+            self.create_oval(x0, y1 - 2 * r, x0 + 2 * r, y1, fill=col, outline="")
+            self.create_rectangle(x0, y0 + r, x1, y1 - r, fill=col, outline="")
+            self.configure(cursor="hand2" if self._hover or self._dragging else "arrow")
+        except Exception:
+            pass
+
+    def apply_theme(self):
+        try:
+            self.configure(bg=self.master.cget("background"))
+        except Exception:
+            pass
+        self._draw()
+
+    def _set_hover(self, v):
+        self._hover = bool(v)
+        if not v:
+            self._dragging = False
+        self._draw()
+
+    def _press(self, e):
+        try:
+            _, _, y0, y1 = self._geom()
+            if y0 <= e.y <= y1:
+                self._dragging = True
+                self._grab = e.y - y0
+            else:
+                pad, track_h, ty0, ty1 = self._geom()
+                if callable(self._command):
+                    self._command("scroll", -1 if e.y < ty0 else 1, "pages")
+            self._draw()
+        except Exception:
+            pass
+
+    def _drag(self, e):
+        if not self._dragging:
+            return
+        try:
+            pad, track_h, y0, y1 = self._geom()
+            th = y1 - y0
+            frac = (e.y - pad - self._grab) / max(1.0, track_h - th)
+            frac = max(0.0, min(1.0, frac))
+            if callable(self._command):
+                self._command("moveto", frac)
+        except Exception:
+            pass
+
+    def _end_drag(self):
+        self._dragging = False
+        self._draw()
+
+
+class DropMenu(tk.Frame):
+    """Красивый выпадающий список вместо Combobox. Темы — через THEMED."""
+
+    def __init__(self, parent, variable, values, width=24, command=None, **kw):
+        super().__init__(parent, bg=BORDER, padx=1, pady=1)
+        self._var = variable
+        self._values = list(values or [])
+        self._command = command
+        self._pop = None
+        self._inner = tk.Frame(self, bg=CARD2)
+        self._inner.pack(fill="both", expand=True)
+        self._lbl = tk.Label(self._inner, textvariable=variable, bg=CARD2,
+                             fg=TEXT, font=(FONT, 10), anchor="w")
+        self._lbl.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=5)
+        self._arrow = tk.Label(self._inner, text="▾", bg=CARD2, fg=MUTED,
+                               font=(FONT, 10))
+        self._arrow.pack(side="right", padx=8)
+        try:
+            _f = tkfont.Font(font=(FONT, 10))
+            tw = max([_f.measure(str(v)) for v in self._values] + [60])
+            self.configure(width=max(tw + 48, int(width) * 9))
+        except Exception:
+            pass
+        for w in (self, self._inner, self._lbl, self._arrow):
+            w.bind("<Button-1>", self._toggle, add="+")
+            try:
+                w.configure(cursor="hand2")
+            except Exception:
+                pass
+        track_themed(self)
+
+    def set_values(self, values):
+        self._values = list(values or [])
+        if self._var.get() not in self._values and self._values:
+            self._var.set(self._values[0])
+
+    def apply_theme(self):
+        try:
+            self.configure(bg=BORDER)
+            self._inner.configure(bg=CARD2)
+            self._lbl.configure(bg=CARD2, fg=TEXT)
+            self._arrow.configure(bg=CARD2, fg=MUTED)
+        except Exception:
+            pass
+        try:
+            if self._pop is not None:
+                self._close()
+        except Exception:
+            pass
+
+    def _toggle(self, _e=None):
+        if self._pop is not None:
+            self._close()
+            return "break"
+        try:
+            pop = tk.Toplevel(self)
+            pop.overrideredirect(True)
+            pop.attributes("-topmost", True)
+            pop.configure(bg=BORDER)
+            frm = tk.Frame(pop, bg=CARD2)
+            frm.pack(fill="both", expand=True, padx=1, pady=1)
+            for v in self._values:
+                row = tk.Label(frm, text=v, bg=CARD2, fg=TEXT, font=(FONT, 10),
+                               anchor="w", padx=10, pady=5)
+                row.pack(fill="x")
+                row.bind("<Enter>", lambda e, r=row: r.configure(bg=ACCENT, fg="white"))
+                row.bind("<Leave>", lambda e, r=row: r.configure(bg=CARD2, fg=TEXT))
+                row.bind("<Button-1>", lambda e, val=v: self._pick(val))
+            pop.update_idletasks()
+            x = self.winfo_rootx()
+            y = self.winfo_rooty() + self.winfo_height() + 2
+            pop.geometry(f"{self.winfo_width()}x{min(240, 30 * max(1, len(self._values)))}+{x}+{y}")
+            self._pop = pop
+            pop.bind("<Escape>", lambda _e: self._close())
+            pop.bind("<FocusOut>", lambda _e: self.after(120, self._autoclose))
+            try:
+                pop.focus_set()
+            except Exception:
+                pass
+        except Exception:
+            pass
+        return "break"
+
+    def _autoclose(self):
+        try:
+            if self._pop is not None and not str(self.focus_get()).startswith(str(self._pop)):
+                self._close()
+        except Exception:
+            pass
+
+    def _pick(self, val):
+        try:
+            self._var.set(val)
+        except Exception:
+            pass
+        self._close()
+        if callable(self._command):
+            try:
+                self._command()
+            except Exception:
+                pass
+
+    def _close(self):
+        try:
+            p, self._pop = self._pop, None
+            if p is not None:
+                p.destroy()
+        except Exception:
+            self._pop = None
 
 
 class ZapretApp:
@@ -1681,6 +2285,16 @@ class ZapretApp:
             root.iconbitmap(default="")
         except Exception:
             pass
+        # своя шапка вместо системной (на Win10 DWM-тинт невозможен).
+        # Tk сбрасывает стиль при первом показе — повтор по <Map>.
+        self._chrome_ok = False
+        self._maximized = False
+        try:
+            root.update_idletasks()
+            self._chrome_ok = setup_borderless(root)
+        except Exception:
+            self._chrome_ok = False
+        root.bind("<Map>", self._on_map_chrome, add="+")
         self.style_setup()
         self.build_layout()
         self.refresh_all_static()
@@ -1700,6 +2314,16 @@ class ZapretApp:
         self.check_zapret_updates()
         self.check_app_updates()
 
+    def _on_map_chrome(self, _e=None):
+        # Tk возвращает WS_CAPTION при первом показе — снять снова
+        try:
+            u = ctypes.windll.user32
+            hwnd = toplevel_hwnd(self.root)
+            if hwnd and (u.GetWindowLongW(hwnd, -16) & 0x00C00000):
+                self._chrome_ok = setup_borderless(self.root)
+        except Exception:
+            pass
+
     # ---------- стиль ----------
     def style_setup(self):
         st = ttk.Style()
@@ -1717,13 +2341,13 @@ class ZapretApp:
         st.configure("H2.TLabel", background=CARD, foreground=TEXT, font=(FONT, 12, "bold"))
         st.configure("Accent.TButton", background=ACCENT, foreground="white",
                      font=(FONT, 10, "bold"), borderwidth=0, padding=(14, 8))
-        st.map("Accent.TButton", background=[("active", ACCENT_HOVER), ("disabled", "#3A3F55")])
+        st.map("Accent.TButton", background=[("active", ACCENT_HOVER), ("disabled", BORDER)])
         st.configure("Ghost.TButton", background=CARD2, foreground=TEXT,
                      font=(FONT, 10), borderwidth=1, padding=(12, 7))
-        st.map("Ghost.TButton", background=[("active", "#332016")])
+        st.map("Ghost.TButton", background=[("active", BORDER)])
         st.configure("Nav.TButton", background=SIDEBAR, foreground=MUTED,
                      font=(FONT, 11), borderwidth=0, padding=(12, 10), anchor="w")
-        st.map("Nav.TButton", background=[("active", "#241014")], foreground=[("active", TEXT)])
+        st.map("Nav.TButton", background=[("active", CARD2)], foreground=[("active", TEXT)])
         st.configure("TEntry", fieldbackground=CARD2, background=CARD2, foreground=TEXT,
                      bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER,
                      selectbackground=ACCENT, selectforeground="white")
@@ -1763,12 +2387,108 @@ class ZapretApp:
         except Exception:
             pass
 
+    # ---------- своя шапка окна ----------
+    def build_titlebar(self):
+        """Шапка в стиле темы + системные кнопки ─ ▢ ✕."""
+        bar = tk.Frame(self.root, bg=TITLEBAR_BG, height=40)
+        bar.grid(row=0, column=0, columnspan=2, sticky="ew")
+        bar.grid_propagate(False)
+        bar.columnconfigure(0, weight=1)
+        left = tk.Frame(bar, bg=TITLEBAR_BG)
+        left.grid(row=0, column=0, sticky="w")
+        tk.Label(left, text="🔥", bg=TITLEBAR_BG, fg=ACCENT_HOVER,
+                 font=(FONT, 13)).pack(side="left", padx=(14, 6))
+        tk.Label(left, text=APP_NAME, bg=TITLEBAR_BG, fg=TEXT,
+                 font=(FONT, 11, "bold")).pack(side="left")
+        tk.Label(left, text=f"v{APP_VERSION}", bg=TITLEBAR_BG, fg=MUTED,
+                 font=(FONT, 9)).pack(side="left", padx=(8, 0))
+        btns = tk.Frame(bar, bg=TITLEBAR_BG)
+        btns.grid(row=0, column=1, sticky="e", padx=(0, 6))
+
+        def _mk(txt, cmd, hover_role):
+            # цвета резолвятся в момент наведения — переживают смену темы
+            b = tk.Button(btns, text=txt, bg=TITLEBAR_BG, fg=MUTED, font=(FONT, 11),
+                          bd=0, width=4, cursor="hand2", activebackground=TITLEBAR_BG,
+                          activeforeground="white", command=cmd)
+            b.pack(side="left", padx=1, pady=3)
+
+            def _h(_e=None, bb=b):
+                bb.config(bg=CARD2 if hover_role == "card2" else ACCENT,
+                          fg="white")
+
+            def _l(_e=None, bb=b):
+                bb.config(bg=TITLEBAR_BG, fg=MUTED)
+
+            b.bind("<Enter>", _h)
+            b.bind("<Leave>", _l)
+            return b
+
+        _mk("─", lambda: self._win_min(), "card2")
+        self.btn_max = _mk("▢", lambda: self.toggle_maximize(), "card2")
+        _mk("✕", lambda: self._win_close(), "accent")
+        # даблклик — развернуть (при рабочем borderless этим занимается Windows)
+        bar.bind("<Double-Button-1>", lambda e: self.toggle_maximize(force=True))
+        left.bind("<Double-Button-1>", lambda e: self.toggle_maximize(force=True))
+        # тонкая акцентная линия под шапкой
+        self.title_strip = tk.Frame(self.root, bg=ACCENT, height=2)
+        self.title_strip.grid(row=1, column=0, columnspan=2, sticky="ew")
+
+    def _win_min(self):
+        try:
+            self.root.iconify()
+        except Exception:
+            pass
+
+    def _win_close(self):
+        if self.engine.running:
+            if not self.dlg_ask("Проверка ещё идёт. Завершить и закрыть?"):
+                return
+            self.engine.cancel()
+        log_action("Приложение закрыто пользователем")
+        try:
+            self.monitor_stop.set()
+        except Exception:
+            pass
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+
+    def toggle_maximize(self, force=False):
+        if self._chrome_ok and force:
+            return
+        try:
+            if self.root.state() == "zoomed":
+                self.root.state("normal")
+                self._maximized = False
+            else:
+                self.root.state("zoomed")
+                self._maximized = True
+            try:
+                self.btn_max.config(text="❐" if self._maximized else "▢")
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _sync_max_glyph(self):
+        try:
+            if not hasattr(self, "btn_max"):
+                return
+            zoomed = (self.root.state() == "zoomed")
+            if zoomed != self._maximized:
+                self._maximized = zoomed
+                self.btn_max.config(text="❐" if zoomed else "▢")
+        except Exception:
+            pass
+
     # ---------- каркас ----------
     def build_layout(self):
         self.root.columnconfigure(1, weight=1)
-        self.root.rowconfigure(0, weight=1)
+        self.root.rowconfigure(2, weight=1)
+        self.build_titlebar()
         body = tk.Frame(self.root, bg=BG)
-        body.grid(row=0, column=0, columnspan=2, sticky="nsew")
+        body.grid(row=2, column=0, columnspan=2, sticky="nsew")
         body.columnconfigure(1, weight=1)
         body.rowconfigure(0, weight=1)
         # sidebar
@@ -1780,16 +2500,22 @@ class ZapretApp:
         sub = tk.Label(sb, text="DPI bypass control", bg=SIDEBAR, fg=MUTED, font=(FONT, 9), anchor="w")
         sub.pack(fill="x", padx=18, pady=(0, 16))
         self.nav_btns = {}
+        self.nav_strips = {}
         for key, label in [("check", "🔍  Проверка конфигов"),
                            ("domains", "🌐  Домены"),
                            ("logs", "📋  Логи проверок"),
                            ("actions", "📝  Журнал действий"),
                            ("settings", "⚙️  Настройки")]:
-            b = tk.Button(sb, text=label, bg=SIDEBAR, fg=MUTED, font=(FONT, 11),
-                          bd=0, anchor="w", padx=18, pady=10, cursor="hand2",
-                          activebackground="#2A1215", activeforeground=TEXT,
+            row = tk.Frame(sb, bg=SIDEBAR)
+            row.pack(fill="x")
+            strip = tk.Frame(row, bg=SIDEBAR, width=4)
+            strip.pack(side="left", fill="y")
+            self.nav_strips[key] = strip
+            b = tk.Button(row, text=label, bg=SIDEBAR, fg=MUTED, font=(FONT, 11),
+                          bd=0, anchor="w", padx=14, pady=10, cursor="hand2",
+                          activebackground=CARD2, activeforeground=TEXT,
                           command=lambda k=key: self.show_page(k))
-            b.pack(fill="x")
+            b.pack(side="left", fill="both", expand=True)
             self.nav_btns[key] = b
         sb_bottom = tk.Frame(sb, bg=SIDEBAR)
         sb_bottom.pack(side="bottom", fill="x", padx=18, pady=16)
@@ -1812,13 +2538,11 @@ class ZapretApp:
         # разделительная линия — отдельным рядом, чтобы текст не залазил на неё
         hr = tk.Frame(main, bg=BORDER, height=1)
         hr.grid(row=1, column=0, sticky="ew", padx=24)
-        # статус-пилюля справа
+        # статус-бейдж справа
         pill_wrap = tk.Frame(hdr, bg=BG)
         pill_wrap.grid(row=0, column=1, sticky="e")
-        self.status_dot = tk.Label(pill_wrap, text="●", bg=BG, fg=MUTED, font=(FONT, 12))
-        self.status_dot.pack(side="left", padx=(0, 6))
-        self.status_lbl = tk.Label(pill_wrap, text="статус…", bg=BG, fg=MUTED, font=(FONT, 10))
-        self.status_lbl.pack(side="left")
+        self.status_badge = StatusBadge(pill_wrap)
+        self.status_badge.pack(side="left")
         # content
         self.content = tk.Frame(main, bg=BG)
         self.content.grid(row=2, column=0, sticky="nsew", padx=24, pady=14)
@@ -1849,10 +2573,15 @@ class ZapretApp:
             else:
                 pg.grid_remove()
         for k, b in self.nav_btns.items():
+            strip = self.nav_strips.get(k)
             if k == key:
-                b.config(bg="#3A0F13", fg=TEXT, font=(FONT, 11, "bold"))
+                b.config(bg=CARD2, fg=TEXT, font=(FONT, 11, "bold"))
+                if strip is not None:
+                    strip.config(bg=ACCENT)
             else:
                 b.config(bg=SIDEBAR, fg=MUTED, font=(FONT, 11))
+                if strip is not None:
+                    strip.config(bg=SIDEBAR)
         if key == "logs":
             self.refresh_logs_list()
         if key == "actions":
@@ -1949,6 +2678,78 @@ class ZapretApp:
         except Exception:
             pass
 
+    # ---------- красивые модалки вместо системных messagebox ----------
+    def _modal(self, kind, title, text, buttons):
+        """Каркас модалки. kind: info|error|ask. buttons: [(label, value, style)].
+        Возвращает value нажатой кнопки (Esc/крест = последнее значение)."""
+        res = {"v": buttons[-1][1] if buttons else None}
+        ov = tk.Toplevel(self.root)
+        try:
+            ov.overrideredirect(True)
+            ov.attributes("-topmost", True)
+            try:
+                ov.attributes("-alpha", 0.55)
+            except Exception:
+                pass
+            ov.configure(bg="black")
+            self.root.update_idletasks()
+            x, y = self.root.winfo_x(), self.root.winfo_y()
+            w, h = self.root.winfo_width(), self.root.winfo_height()
+            ov.geometry(f"{w}x{h}+{x}+{y}")
+        except Exception:
+            pass
+        outer = tk.Frame(ov, bg=BORDER, padx=1, pady=1)
+        outer.place(relx=0.5, rely=0.44, anchor="center")
+        inner = tk.Frame(outer, bg=CARD)
+        inner.pack(fill="both", expand=True)
+        accent = {"info": ACCENT, "error": RED, "ask": YELLOW}.get(kind, ACCENT)
+        tk.Frame(inner, bg=accent, height=4).pack(fill="x")
+        body = tk.Frame(inner, bg=CARD)
+        body.pack(fill="both", expand=True, padx=20, pady=16)
+        glyph, gcol = {"info": ("✓", GREEN), "error": ("✕", RED),
+                       "ask": ("?", YELLOW)}.get(kind, ("✓", GREEN))
+        top = tk.Frame(body, bg=CARD)
+        top.pack(fill="x", pady=(0, 8))
+        tk.Label(top, text=glyph, bg=CARD, fg=gcol, font=(FONT, 16, "bold")).pack(side="left", padx=(0, 10))
+        tk.Label(top, text=title, bg=CARD, fg=TEXT, font=(FONT, 12, "bold"),
+                 anchor="w").pack(side="left")
+        tk.Label(body, text=text, bg=CARD, fg=TEXT, font=(FONT, 10),
+                 wraplength=360, justify="left").pack(fill="x", pady=(0, 14))
+        brow = tk.Frame(body, bg=CARD)
+        brow.pack(fill="x")
+
+        def _done(v):
+            res["v"] = v
+            try:
+                ov.destroy()
+            except Exception:
+                pass
+
+        for label, val, sty in buttons:
+            RButton(brow, text=label, style=sty,
+                    command=lambda v=val: _done(v)).pack(side="left", padx=(0, 10))
+        ov.bind("<Escape>", lambda _e: _done(res["v"]))
+        try:
+            # БЕЗ transient: на Tk 9 + Win11 transient прячет overrideredirect-окна!
+            ov.grab_set()
+            ov.wait_window()
+        except Exception:
+            try:
+                ov.destroy()
+            except Exception:
+                pass
+        return res["v"]
+
+    def dlg_info(self, text, title="Zapret Manager"):
+        self._modal("info", title, text, [("Понятно", None, "accent")])
+
+    def dlg_error(self, text, title="Ошибка"):
+        self._modal("error", title, text, [("Понятно", None, "accent")])
+
+    def dlg_ask(self, text, title="Подтверждение"):
+        return bool(self._modal("ask", title, text,
+                                [("Да", True, "accent"), ("Нет", False, "ghost")]))
+
     def poll_queue(self):
         try:
             while True:
@@ -1973,12 +2774,16 @@ class ZapretApp:
                     self._show_vpn(payload[0], payload[1])
         except queue.Empty:
             pass
+        # даблклик по шапке разворачивает сама Windows — синхронизируем глиф
+        try:
+            self._sync_max_glyph()
+        except Exception:
+            pass
         self.root.after(250, self.poll_queue)
 
     def set_status(self, text, color=MUTED):
         try:
-            self.status_lbl.config(text=text, fg=color)
-            self.status_dot.config(fg=color)
+            self.status_badge.set(text, color)
         except Exception:
             pass
 
@@ -2000,15 +2805,17 @@ class ZapretApp:
                  bg=CARD, fg=MUTED, font=(FONT, 9), wraplength=700, justify="left")
         self.check_desc.grid(row=0, column=0, columnspan=4, sticky="w", padx=16, pady=(12, 8))
         self._autowrap(self.check_desc, p)
-        self.btn_check_sel = ttk.Button(top, text="▶ Проверить выбранные", style="Accent.TButton",
-                                        command=self.start_check_selected)
-        self.btn_check_sel.grid(row=1, column=0, sticky="w", padx=16, pady=(0, 6))
-        self.btn_check_all = ttk.Button(top, text="Проверить все", style="Ghost.TButton",
-                                        command=self.start_check_all)
-        self.btn_check_all.grid(row=1, column=1, sticky="w", padx=8, pady=(0, 6))
-        self.btn_cancel = ttk.Button(top, text="⛔ Отмена", style="Ghost.TButton",
-                                     command=self.cancel_check, state="disabled")
-        self.btn_cancel.grid(row=1, column=2, sticky="w", padx=8, pady=(0, 6))
+        brow = tk.Frame(top, bg=CARD)
+        brow.grid(row=1, column=0, columnspan=4, sticky="w", padx=16, pady=(0, 6))
+        self.btn_check_sel = RButton(brow, text="▶ Проверить выбранные", style="accent",
+                                     command=self.start_check_selected)
+        self.btn_check_all = RButton(brow, text="Проверить все", style="ghost",
+                                     command=self.start_check_all)
+        self.btn_cancel = RButton(brow, text="⛔ Отмена", style="ghost",
+                                  command=self.cancel_check, state="disabled")
+        self.btn_check_sel.pack(side="left", padx=(0, 8))
+        self.btn_check_all.pack(side="left", padx=(0, 8))
+        self.btn_cancel.pack(side="left")
         self.prog = ttk.Progressbar(top, style="Horizontal.TProgressbar", mode="determinate")
         self.prog.grid(row=2, column=0, columnspan=4, sticky="ew", padx=16, pady=(0, 4))
         self.prog_lbl = tk.Label(top, text="Готов к проверке", bg=CARD, fg=MUTED, font=(FONT, 9))
@@ -2020,16 +2827,16 @@ class ZapretApp:
         qf.pack(fill="x", padx=16, pady=10)
         tk.Label(qf, text="Режим:", bg=CARD, fg=MUTED, font=(FONT, 10)).pack(side="left")
         self.q_mode_var = tk.StringVar(value=mode_label(self.cfg.get("check_mode", "quick")))
-        ttk.Combobox(qf, textvariable=self.q_mode_var, values=list(MODE_LABELS.values()),
-                     state="readonly", width=26).pack(side="left", padx=(6, 14))
+        DropMenu(qf, variable=self.q_mode_var, values=list(MODE_LABELS.values()),
+                 width=26).pack(side="left", padx=(6, 14))
         tk.Label(qf, text="Повторы:", bg=CARD, fg=MUTED, font=(FONT, 10)).pack(side="left")
         self.q_repeat_var = tk.StringVar(value=str(self.cfg.get("check_repeat", 2)))
-        tk.Spinbox(qf, from_=1, to=3, textvariable=self.q_repeat_var, width=4,
-                   bg=CARD2, fg=TEXT, bd=0, buttonbackground=CARD2).pack(side="left", padx=(6, 14))
+        DropMenu(qf, variable=self.q_repeat_var, values=["1", "2", "3"],
+                 width=8).pack(side="left", padx=(6, 14))
         tk.Label(qf, text="Макс. пинг, мс:", bg=CARD, fg=MUTED, font=(FONT, 10)).pack(side="left")
         self.q_thr_var = tk.StringVar(value=str(self.cfg.get("ping_threshold_ms", 5000)))
         ttk.Entry(qf, textvariable=self.q_thr_var, width=8).pack(side="left", padx=(6, 14))
-        ttk.Button(qf, text="💾", style="Accent.TButton",
+        RButton(qf, text="💾", style="accent", height=30,
                    command=self.save_quick_settings).pack(side="left")
         # баннер обновления zapret (скрыт, показывается при наличии апдейта)
         self.update_banner_o, ub = self.card(inner)
@@ -2037,11 +2844,11 @@ class ZapretApp:
         self.update_banner_o.pack_forget()
         self.update_lbl = tk.Label(ub, text="", bg=CARD, fg=YELLOW, font=(FONT, 10, "bold"))
         self.update_lbl.pack(side="left", padx=16, pady=10)
-        ttk.Button(ub, text="Открыть релизы", style="Accent.TButton",
+        RButton(ub, text="Открыть релизы", style="accent",
                    command=lambda: webbrowser.open(
                        "https://github.com/Flowseal/zapret-discord-youtube/releases/latest")).pack(
             side="right", padx=(0, 8), pady=8)
-        ttk.Button(ub, text="×", style="Ghost.TButton",
+        RButton(ub, text="×", style="ghost", height=30,
                    command=lambda: self.update_banner_o.pack_forget()).pack(
             side="right", padx=(0, 16), pady=8)
         # баннер обновления самого приложения (скрыт до проверки версии)
@@ -2050,10 +2857,10 @@ class ZapretApp:
         self.app_banner_o.pack_forget()
         self.app_update_lbl = tk.Label(ab, text="", bg=CARD, fg=ACCENT2, font=(FONT, 10, "bold"))
         self.app_update_lbl.pack(side="left", padx=16, pady=10)
-        ttk.Button(ab, text="⬇ Обновить сейчас", style="Accent.TButton",
+        RButton(ab, text="⬇ Обновить сейчас", style="accent",
                    command=self.on_app_update_now).pack(
             side="right", padx=(0, 8), pady=8)
-        ttk.Button(ab, text="×", style="Ghost.TButton",
+        RButton(ab, text="×", style="ghost", height=30,
                    command=lambda: self.app_banner_o.pack_forget()).pack(
             side="right", padx=(0, 16), pady=8)
         # активный конфиг + действия (бывшая вкладка «Выбор конфига»)
@@ -2070,11 +2877,11 @@ class ZapretApp:
         self.vpn_lbl.pack(anchor="w")
         aright = tk.Frame(abar, bg=CARD)
         aright.pack(side="right", padx=16, pady=8)
-        ttk.Button(aright, text="✔ Применить выбранный", style="Accent.TButton",
+        RButton(aright, text="✔ Применить выбранный", style="accent",
                    command=self.on_apply_selected).pack(side="left", padx=(0, 8))
-        ttk.Button(aright, text="↻ Перезапустить", style="Ghost.TButton",
+        RButton(aright, text="↻ Перезапустить", style="ghost",
                    command=self.on_restart_config).pack(side="left", padx=(0, 8))
-        ttk.Button(aright, text="■ Остановить", style="Ghost.TButton",
+        RButton(aright, text="■ Остановить", style="ghost",
                    command=self.on_remove_service).pack(side="left")
         # список конфигов + лог
         mid = tk.Frame(inner, bg=BG)
@@ -2091,9 +2898,9 @@ class ZapretApp:
         self.cfg_checks.pack(fill="both", expand=True)
         btns = tk.Frame(left, bg=CARD)
         btns.pack(fill="x", padx=14, pady=(0, 12))
-        ttk.Button(btns, text="Выбрать все", style="Ghost.TButton",
+        RButton(btns, text="Выбрать все", style="ghost",
                    command=lambda: self.set_all_checks(True)).pack(side="left", padx=(0, 6))
-        ttk.Button(btns, text="Снять все", style="Ghost.TButton",
+        RButton(btns, text="Снять все", style="ghost",
                    command=lambda: self.set_all_checks(False)).pack(side="left")
 
         o2, right = self.card(mid)
@@ -2110,7 +2917,7 @@ class ZapretApp:
             self.grade_tree.heading(c, text=t)
             self.grade_tree.column(c, width=w, anchor="center" if c != "config" else "w",
                                    stretch=(c == "config"))
-        gsb = ttk.Scrollbar(gwrap, orient="vertical", command=self.grade_tree.yview)
+        gsb = NiceScroll(gwrap, command=self.grade_tree.yview)
         self.grade_tree.configure(yscrollcommand=gsb.set)
         self.grade_tree.pack(side="left", fill="both", expand=True)
         gsb.pack(side="right", fill="y")
@@ -2206,7 +3013,7 @@ class ZapretApp:
             rep = min(3, max(1, int(self.q_repeat_var.get())))
             thr = max(300, int(self.q_thr_var.get()))
         except ValueError:
-            messagebox.showerror(APP_NAME, "Повторы и пинг — числа")
+            self.dlg_error("Повторы и пинг — числа")
             return
         self.cfg["check_mode"] = mode_key(self.q_mode_var.get())
         self.cfg["check_repeat"] = rep
@@ -2219,20 +3026,20 @@ class ZapretApp:
     def start_check_selected(self):
         sel = self.selected_configs()
         if not sel:
-            messagebox.showinfo(APP_NAME, "Выберите хотя бы один конфиг")
+            self.dlg_info("Выберите хотя бы один конфиг")
             return
         self.start_check(sel)
 
     def start_check_all(self):
         cfgs = list_configs(self.cfg["zapret_root"])
         if not cfgs:
-            messagebox.showwarning(APP_NAME, "Конфиги не найдены. Проверьте корневую папку zapret в Настройках.")
+            self.dlg_info("Конфиги не найдены. Проверьте корневую папку zapret в Настройках.")
             return
         self.start_check(cfgs)
 
     def start_check(self, bat_list):
         if self.engine.running:
-            messagebox.showinfo(APP_NAME, "Проверка уже идёт")
+            self.dlg_info("Проверка уже идёт")
             return
         run_log_reset(f"Конфигов: {len(bat_list)}")
         if not is_admin():
@@ -2346,9 +3153,9 @@ class ZapretApp:
 
     def on_app_update_now(self):
         if self.engine.running:
-            messagebox.showinfo(APP_NAME, "Дождитесь конца проверки, потом обновитесь")
+            self.dlg_info("Дождитесь конца проверки, потом обновитесь")
             return
-        if not messagebox.askyesno(APP_NAME, "Скачать и установить обновление?\nПриложение перезапустится, настройки сохранятся."):
+        if not self.dlg_ask("Скачать и установить обновление?\nПриложение перезапустится, настройки сохранятся."):
             return
         self.set_status("обновление…", YELLOW)
         threading.Thread(target=self._self_update_worker, daemon=True).start()
@@ -2496,10 +3303,23 @@ class ZapretApp:
             active = self.cfg.get("active_config", "") or st.get("strategy", "")
             self.active_lbl.config(text=active or "не выбран")
             z = st["zapret"]
-            col = GREEN if z == "RUNNING" else (YELLOW if z == "STOPPED" else RED)
-            txt = f"Служба: {z}   •   WinDivert: {st['windivert']}   •   winws: {'да' if st['winws'] else 'нет'}"
+            if z == "RUNNING":
+                col = GREEN
+                txt = f"Служба: RUNNING   •   WinDivert: {st['windivert']}   •   winws: {'да' if st['winws'] else 'нет'}"
+                pill, pcol = "обход: активен (служба)", GREEN
+            elif st["winws"]:
+                # конфиг запущен разово, без службы — это тоже «работает»
+                col = GREEN
+                txt = f"Обход активен (без службы, winws запущен)   •   WinDivert: {st['windivert']}"
+                pill, pcol = "обход: активен", GREEN
+            elif z == "STOPPED":
+                col, txt, pill, pcol = (YELLOW, f"Служба: STOPPED   •   winws: нет",
+                                        "zapret: STOPPED", YELLOW)
+            else:
+                col, txt, pill, pcol = (RED, f"Служба: {z}   •   winws: нет",
+                                        f"zapret: {z}", RED)
             self.svc_lbl.config(text=txt, fg=col)
-            self.set_status(f"zapret: {z}", col)
+            self.set_status(pill, pcol)
         except Exception:
             pass
         self.refresh_vpn_async()
@@ -2554,7 +3374,7 @@ class ZapretApp:
     def on_apply_selected(self):
         bat = self.selected_grade_bat()
         if not bat:
-            messagebox.showinfo(APP_NAME, "Выберите конфиг в таблице пингов (клик по строке)")
+            self.dlg_info("Выберите конфиг в таблице пингов (клик по строке)")
             return
         self.on_apply_config(bat)
 
@@ -2562,17 +3382,17 @@ class ZapretApp:
         active = self.cfg.get("active_config", "")
         st = service_status()
         if st["zapret"] in ("RUNNING", "STOPPED"):
-            if not messagebox.askyesno(APP_NAME, "Перезапустить службу zapret (активный конфиг)?"):
+            if not self.dlg_ask("Перезапустить службу zapret (активный конфиг)?"):
                 return
             self.set_status("перезапуск…", YELLOW)
             threading.Thread(target=self._restart_worker, daemon=True).start()
         elif active:
-            if not messagebox.askyesno(APP_NAME, f"Перезапустить {active} (без службы)?"):
+            if not self.dlg_ask(f"Перезапустить {active} (без службы)?"):
                 return
             threading.Thread(target=self._restart_standalone_worker,
                              args=(active,), daemon=True).start()
         else:
-            messagebox.showinfo(APP_NAME, "Нет активного конфига для перезапуска")
+            self.dlg_info("Нет активного конфига для перезапуска")
 
     def _restart_worker(self):
         cmds = 'net stop zapret >nul 2>&1 & net start zapret >nul 2>&1'
@@ -2594,7 +3414,7 @@ class ZapretApp:
     def _restart_standalone_worker(self, bat):
         stop_winws()
         time.sleep(1)
-        ok = start_bat_minimized(self.cfg["zapret_root"], bat)
+        ok = start_winws_hidden(self.cfg["zapret_root"], bat)
         time.sleep(2)
         running = winws_running()
         msg = f"{bat}: {'запущен' if running else 'не запустился'}"
@@ -2644,8 +3464,8 @@ class ZapretApp:
             res["mode"] = var.get()
             d.destroy()
 
-        ttk.Button(btns, text="OK", style="Accent.TButton", command=_ok).pack(side="left", padx=(0, 8))
-        ttk.Button(btns, text="Отмена", style="Ghost.TButton", command=d.destroy).pack(side="left")
+        RButton(btns, text="OK", style="accent", command=_ok).pack(side="left", padx=(0, 8))
+        RButton(btns, text="Отмена", style="ghost", command=d.destroy).pack(side="left")
         try:
             self.root.update_idletasks()
             x = self.root.winfo_x() + (self.root.winfo_width() - 420) // 2
@@ -2667,7 +3487,7 @@ class ZapretApp:
             time.sleep(1)
         stop_winws()
         time.sleep(0.5)
-        ok = start_bat_minimized(self.cfg["zapret_root"], bat)
+        ok = start_winws_hidden(self.cfg["zapret_root"], bat)
         time.sleep(2)
         running = winws_running()
         if ok and running:
@@ -2696,7 +3516,7 @@ class ZapretApp:
         self.msg_q.put(("actions_refresh", None))
 
     def on_remove_service(self):
-        if messagebox.askyesno(APP_NAME, "Удалить службу zapret и остановить обход?"):
+        if self.dlg_ask("Удалить службу zapret и остановить обход?"):
             threading.Thread(target=self._remove_worker, daemon=True).start()
 
     def _remove_worker(self):
@@ -2718,9 +3538,9 @@ class ZapretApp:
         self.dom_hint = tk.Label(row, text="Списки из папки lists/",
                                  bg=CARD, fg=MUTED, font=(FONT, 9))
         self.dom_hint.pack(side="left")
-        ttk.Button(row, text="🔄 Обновить", style="Ghost.TButton",
+        RButton(row, text="🔄 Обновить", style="ghost",
                    command=self.refresh_domains_list).pack(side="right", padx=(6, 0))
-        ttk.Button(row, text="💾 Сохранить", style="Accent.TButton",
+        RButton(row, text="💾 Сохранить", style="accent",
                    command=self.save_domain_file).pack(side="right")
         mid = tk.Frame(p, bg=BG)
         mid.grid(row=1, column=0, sticky="nsew")
@@ -2786,12 +3606,12 @@ class ZapretApp:
             self.dom_text.delete("1.0", "end")
             self.dom_text.insert("end", content)
         except Exception as e:
-            messagebox.showerror(APP_NAME, f"Не удалось прочитать файл: {e}")
+            self.dlg_error(f"Не удалось прочитать файл: {e}")
 
     def save_domain_file(self):
         fp = self._dom_current or self._dom_path()
         if not fp:
-            messagebox.showinfo(APP_NAME, "Выберите файл слева")
+            self.dlg_info("Выберите файл слева")
             return
         try:
             if os.path.exists(fp):
@@ -2804,9 +3624,9 @@ class ZapretApp:
             except Exception:
                 pass
             log_action(f"Отредактирован список {os.path.basename(fp)} (бэкап .bak)", "lists")
-            messagebox.showinfo(APP_NAME, "Сохранено (старая копия — в .bak).\nПерезапустите конфиг для применения.")
+            self.dlg_info("Сохранено (старая копия — в .bak).\nПерезапустите конфиг для применения.")
         except Exception as e:
-            messagebox.showerror(APP_NAME, f"Не удалось сохранить: {e}")
+            self.dlg_error(f"Не удалось сохранить: {e}")
 
     # ================= страница ЛОГИ =================
     def build_logs_page(self):
@@ -2819,13 +3639,13 @@ class ZapretApp:
         row.pack(fill="x", padx=16, pady=12)
         tk.Label(row, text="История проверок сохраняется в data/checks/*.json",
                  bg=CARD, fg=MUTED, font=(FONT, 9)).pack(side="left")
-        ttk.Button(row, text="🔄 Обновить", style="Ghost.TButton",
+        RButton(row, text="🔄 Обновить", style="ghost",
                    command=self.refresh_logs_list).pack(side="right", padx=(6, 0))
-        ttk.Button(row, text="🗑 Удалить", style="Ghost.TButton",
+        RButton(row, text="🗑 Удалить", style="ghost",
                    command=self.delete_selected_log).pack(side="right", padx=(6, 0))
-        ttk.Button(row, text="🧹 Все", style="Ghost.TButton",
+        RButton(row, text="🧹 Все", style="ghost",
                    command=self.clear_all_logs).pack(side="right", padx=(6, 0))
-        ttk.Button(row, text="📂 Открыть папку", style="Ghost.TButton",
+        RButton(row, text="📂 Открыть папку", style="ghost",
                    command=self.open_checks_folder).pack(side="right")
         mid = tk.Frame(p, bg=BG)
         mid.grid(row=1, column=0, sticky="nsew")
@@ -2910,10 +3730,10 @@ class ZapretApp:
     def delete_selected_log(self):
         name = self._selected_log_name()
         if not name:
-            messagebox.showinfo(APP_NAME, "Выберите лог слева")
+            self.dlg_info("Выберите лог слева")
             return
         if name == LAST_RUN_LABEL:
-            if not messagebox.askyesno(APP_NAME, "Очистить «Последний запуск»?"):
+            if not self.dlg_ask("Очистить «Последний запуск»?"):
                 return
             try:
                 open(LAST_RUN_LOG, "w", encoding="utf-8").close()
@@ -2922,17 +3742,17 @@ class ZapretApp:
             log_action("Очищен лог последнего запуска")
             self.refresh_logs_list()
             return
-        if not messagebox.askyesno(APP_NAME, f"Удалить {name}?"):
+        if not self.dlg_ask(f"Удалить {name}?"):
             return
         try:
             os.remove(os.path.join(CHECKS_DIR, name))
             log_action(f"Удалён лог проверки: {name}")
         except Exception as e:
-            messagebox.showerror(APP_NAME, f"Не удалось удалить: {e}")
+            self.dlg_error(f"Не удалось удалить: {e}")
         self.refresh_logs_list()
 
     def clear_all_logs(self):
-        if not messagebox.askyesno(APP_NAME, "Удалить ВСЕ логи проверок?"):
+        if not self.dlg_ask("Удалить ВСЕ логи проверок?"):
             return
         n = 0
         try:
@@ -2962,9 +3782,9 @@ class ZapretApp:
         row.pack(fill="x", padx=16, pady=12)
         tk.Label(row, text="Здесь фиксируются все автопереключения, ручные применения и изменения настроек.",
                  bg=CARD, fg=MUTED, font=(FONT, 9)).pack(side="left")
-        ttk.Button(row, text="🔄 Обновить", style="Ghost.TButton",
+        RButton(row, text="🔄 Обновить", style="ghost",
                    command=self.refresh_actions).pack(side="right", padx=(6, 0))
-        ttk.Button(row, text="🧹 Очистить", style="Ghost.TButton",
+        RButton(row, text="🧹 Очистить", style="ghost",
                    command=self.clear_actions).pack(side="right")
         o2, wrap = self.card(p)
         o2.grid(row=1, column=0, sticky="nsew")
@@ -3063,13 +3883,13 @@ class ZapretApp:
         r1.pack(fill="x", padx=8, pady=8)
         self.root_var = tk.StringVar(value=self.cfg.get("zapret_root", ""))
         ttk.Entry(r1, textvariable=self.root_var, width=60).pack(side="left", fill="x", expand=True, padx=(0, 8))
-        ttk.Button(r1, text="📁 Обзор…", style="Ghost.TButton", command=self.browse_root).pack(side="left")
-        ttk.Button(r1, text="💾 Сохранить", style="Accent.TButton", command=self.save_root).pack(side="left", padx=(8, 0))
+        RButton(r1, text="📁 Обзор…", style="ghost", command=self.browse_root).pack(side="left")
+        RButton(r1, text="💾 Сохранить", style="accent", command=self.save_root).pack(side="left", padx=(8, 0))
         r2 = tk.Frame(inner, bg=CARD)
         r2.pack(fill="x", padx=8, pady=(4, 8))
         tk.Label(r2, text="Сломалась папка? Скачает свежий релиз с GitHub Flowseal, ваши списки сохранит.",
                  bg=CARD, fg=MUTED, font=(FONT, 9)).pack(side="left")
-        ttk.Button(r2, text="🔄 Переустановить Zapret", style="Ghost.TButton",
+        RButton(r2, text="🔄 Переустановить Zapret", style="ghost",
                    command=self.on_reinstall_zapret).pack(side="right")
 
     def _build_set_speed(self):
@@ -3089,9 +3909,10 @@ class ZapretApp:
             row=0, column=0, columnspan=2, sticky="w", pady=4)
         tk.Label(spd, text="Параллельных потоков (турбо добавит сам):", bg=CARD, fg=MUTED, font=(FONT, 10)).grid(row=1, column=0, sticky="w", pady=4)
         self.workers_var = tk.StringVar(value=str(self.cfg.get("check_workers", 8)))
-        tk.Spinbox(spd, from_=4, to=16, textvariable=self.workers_var, width=6,
-                   bg=CARD2, fg=TEXT, bd=0, buttonbackground=CARD2).grid(row=1, column=1, padx=8, sticky="w")
-        ttk.Button(spd, text="💾 Сохранить потоки", style="Ghost.TButton",
+        DropMenu(spd, variable=self.workers_var,
+                 values=[str(n) for n in (4, 6, 8, 10, 12, 16)],
+                 width=8).grid(row=1, column=1, padx=8, sticky="w")
+        RButton(spd, text="💾 Сохранить потоки", style="ghost",
                    command=self.save_speed).grid(row=2, column=0, pady=10, sticky="w")
 
     def _build_set_monitor(self):
@@ -3112,7 +3933,7 @@ class ZapretApp:
         tk.Label(grid, text="Таймаут HTTP (с):", bg=CARD, fg=MUTED, font=(FONT, 10)).grid(row=2, column=0, sticky="w", pady=4)
         self.timeout_var = tk.StringVar(value=str(self.cfg.get("check_timeout_s", 5)))
         ttk.Entry(grid, textvariable=self.timeout_var, width=8).grid(row=2, column=1, padx=8)
-        ttk.Button(grid, text="💾 Сохранить мониторинг", style="Ghost.TButton",
+        RButton(grid, text="💾 Сохранить мониторинг", style="ghost",
                    command=self.save_monitor).grid(row=3, column=0, pady=10, sticky="w")
 
     def _build_set_appear(self):
@@ -3142,23 +3963,22 @@ class ZapretApp:
         fnt.pack(fill="x", padx=8, pady=4)
         tk.Label(fnt, text="Шрифт интерфейса (сохраняется сразу):", bg=CARD, fg=MUTED, font=(FONT, 10)).grid(row=0, column=0, sticky="w", pady=4)
         self.font_var = tk.StringVar(value=self.cfg.get("ui_font", FONT))
-        self.font_box = ttk.Combobox(fnt, textvariable=self.font_var, state="readonly", width=24)
+        self.font_box = DropMenu(fnt, variable=self.font_var, values=[],
+                                 width=24, command=self.on_font_changed)
         self.font_box.grid(row=0, column=1, padx=8, sticky="w")
-        self.font_box.bind("<<ComboboxSelected>>", lambda _e: self.on_font_changed())
         tk.Label(fnt, text="Масштаб интерфейса (сохраняется сразу):", bg=CARD, fg=MUTED, font=(FONT, 10)).grid(row=1, column=0, sticky="w", pady=4)
         self.scale_var = tk.StringVar(value=self.cfg.get("ui_scale", "Обычный"))
-        self.scale_box = ttk.Combobox(fnt, textvariable=self.scale_var, values=list(UI_SCALES.keys()),
-                                      state="readonly", width=24)
+        self.scale_box = DropMenu(fnt, variable=self.scale_var, values=list(UI_SCALES.keys()),
+                                  width=24, command=self.on_font_changed)
         self.scale_box.grid(row=1, column=1, padx=8, sticky="w")
-        self.scale_box.bind("<<ComboboxSelected>>", lambda _e: self.on_font_changed())
         tk.Label(fnt, text="Моноширинный, логи (сохраняется сразу):", bg=CARD, fg=MUTED, font=(FONT, 10)).grid(row=2, column=0, sticky="w", pady=4)
         self.monofont_var = tk.StringVar(value=self.cfg.get("mono_font", MONO))
-        self.monofont_box = ttk.Combobox(fnt, textvariable=self.monofont_var, state="readonly", width=24)
+        self.monofont_box = DropMenu(fnt, variable=self.monofont_var, values=[],
+                                     width=24, command=self.on_font_changed)
         self.monofont_box.grid(row=2, column=1, padx=8, sticky="w")
-        self.monofont_box.bind("<<ComboboxSelected>>", lambda _e: self.on_font_changed())
         tk.Label(fnt, text="Шрифт и масштаб вступают в силу после перезапуска.",
                  bg=CARD, fg=MUTED, font=(FONT, 9)).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 2))
-        ttk.Button(fnt, text="↻ Перезапустить программу", style="Accent.TButton",
+        RButton(fnt, text="↻ Перезапустить программу", style="accent",
                    command=self.restart_app).grid(row=4, column=0, pady=8, sticky="w")
         self.root.after(100, self._fill_font_boxes)
 
@@ -3168,7 +3988,7 @@ class ZapretApp:
         self.targets_txt = tk.Text(inner, bg=CARD2, fg=TEXT, font=(MONO, 9), height=8, bd=0, padx=8, pady=8, insertbackground=TEXT, selectbackground=ACCENT, selectforeground="white")
         self.targets_txt.pack(fill="both", expand=True, padx=8, pady=4)
         self.targets_txt.insert("1.0", self.cfg.get("targets_override", ""))
-        ttk.Button(inner, text="💾 Сохранить цели", style="Ghost.TButton",
+        RButton(inner, text="💾 Сохранить цели", style="ghost",
                    command=self.save_targets).pack(anchor="w", padx=8, pady=8)
 
     def _build_set_app(self):
@@ -3179,11 +3999,11 @@ class ZapretApp:
                        variable=self.autostart_var, bg=CARD, fg=TEXT, font=(FONT, 10),
                        activebackground=CARD, selectcolor=CARD2,
                        command=self.on_autostart_toggle).pack(anchor="w", padx=8, pady=4)
-        ttk.Button(inner, text="📂 Открыть папку данных", style="Ghost.TButton",
+        RButton(inner, text="📂 Открыть папку данных", style="ghost",
                    command=self.open_data_folder).pack(anchor="w", padx=8, pady=8)
-        ttk.Button(inner, text="📌 Создать ярлык на рабочем столе", style="Accent.TButton",
+        RButton(inner, text="📌 Создать ярлык на рабочем столе", style="accent",
                    command=self.on_make_shortcut).pack(anchor="w", padx=8, pady=(0, 8))
-        ttk.Button(inner, text="🔄 Обновить кэш иконок Windows", style="Ghost.TButton",
+        RButton(inner, text="🔄 Обновить кэш иконок Windows", style="ghost",
                    command=self.on_refresh_icons).pack(anchor="w", padx=8, pady=(0, 8))
         tk.Label(inner, text=f"{APP_NAME} v{APP_VERSION} • только стандартная библиотека • ~20 МБ RAM\n"
                              "Ручная проверка: турбо (максимум потоков + приоритет).\n"
@@ -3199,13 +4019,13 @@ class ZapretApp:
     def on_make_shortcut(self):
         ok, msg = create_desktop_shortcut()
         if ok:
-            messagebox.showinfo(APP_NAME, f"Ярлык создан:\n{msg}\n\nЗапускайте приложение двойным кликом.")
+            self.dlg_info(f"Ярлык создан:\n{msg}\n\nЗапускайте приложение двойным кликом.")
         else:
-            messagebox.showerror(APP_NAME, f"Не удалось создать ярлык:\n{msg}")
+            self.dlg_error(f"Не удалось создать ярлык:\n{msg}")
         self.msg_q.put(("actions_refresh", None))
 
     def on_refresh_icons(self):
-        if not messagebox.askyesno(APP_NAME, "Сбросить кэш иконок Windows?\nПроводник на секунду перезапустится (окна папок закроются)."):
+        if not self.dlg_ask("Сбросить кэш иконок Windows?\nПроводник на секунду перезапустится (окна папок закроются)."):
             return
         threading.Thread(target=self._refresh_icons_worker, daemon=True).start()
 
@@ -3215,8 +4035,7 @@ class ZapretApp:
 
     def on_reinstall_zapret(self):
         root = self.root_var.get().strip() or self.cfg.get("zapret_root", "")
-        if not messagebox.askyesno(
-                APP_NAME,
+        if not self.dlg_ask(
                 "Переустановить Zapret?\n\n"
                 f"Папка: {root}\n"
                 "Служба и обход остановятся, папка заменится свежим релизом "
@@ -3350,10 +4169,10 @@ class ZapretApp:
     def save_root(self):
         v = self.root_var.get().strip()
         if not os.path.isdir(v):
-            messagebox.showerror(APP_NAME, "Папка не существует")
+            self.dlg_error("Папка не существует")
             return
         if not glob.glob(os.path.join(v, "*.bat")):
-            if not messagebox.askyesno(APP_NAME, "В папке нет .bat файлов. Всё равно сохранить?"):
+            if not self.dlg_ask("В папке нет .bat файлов. Всё равно сохранить?"):
                 return
         self.cfg["zapret_root"] = v
         save_config(self.cfg)
@@ -3361,7 +4180,7 @@ class ZapretApp:
         log_action(f"Изменена корневая папка zapret: {v}")
         self.refresh_all_static()
         self.refresh_active_bar()
-        messagebox.showinfo(APP_NAME, "Папка сохранена")
+        self.dlg_info("Папка сохранена")
 
     def on_autostart_toggle(self):
         en = self.autostart_var.get()
@@ -3371,10 +4190,10 @@ class ZapretApp:
             save_config(self.cfg)
             log_action(f"Автозагрузка приложения: {'включена' if en else 'выключена'}")
             if en and msg:
-                messagebox.showinfo(APP_NAME, msg)
+                self.dlg_info(msg)
             self.msg_q.put(("actions_refresh", None))
         else:
-            messagebox.showerror(APP_NAME, f"Не удалось изменить автозагрузку: {msg}")
+            self.dlg_error(f"Не удалось изменить автозагрузку: {msg}")
             self.autostart_var.set(not en)
 
     def on_monitor_toggle(self):
@@ -3393,7 +4212,7 @@ class ZapretApp:
             iv = max(1, int(self.interval_var.get()))
             to = min(30, max(2, int(self.timeout_var.get())))
         except ValueError:
-            messagebox.showerror(APP_NAME, "Введите числа")
+            self.dlg_error("Введите числа")
             return
         self.cfg["monitor_interval_min"] = iv
         self.cfg["check_timeout_s"] = to
@@ -3404,19 +4223,19 @@ class ZapretApp:
         self.monitor_stop.set()
         if self.cfg.get("monitor_enabled"):
             self.start_monitor()
-        messagebox.showinfo(APP_NAME, "Сохранено")
+        self.dlg_info("Сохранено")
 
     def save_speed(self):
         try:
             wor = min(16, max(4, int(self.workers_var.get())))
         except ValueError:
-            messagebox.showerror(APP_NAME, "Введите число потоков")
+            self.dlg_error("Введите число потоков")
             return
         self.cfg["check_workers"] = wor
         save_config(self.cfg)
         self.engine.cfg = self.cfg
         log_action(f"Потоки проверки: {wor} (режим/повторы/пинг — на главной)")
-        messagebox.showinfo(APP_NAME, "Сохранено. Ручная проверка идёт в турбо-режиме.")
+        self.dlg_info("Сохранено. Ручная проверка идёт в турбо-режиме.")
 
     def _mark_theme_buttons(self):
         cur = self.theme_var.get()
@@ -3459,6 +4278,8 @@ class ZapretApp:
         for k in THEME_KEYS:
             if old[k].lower() != globals()[k].lower():
                 mapping[old[k].lower()] = globals()[k]
+        global THEME_REMAP
+        THEME_REMAP = mapping
         if not mapping:
             return
         self.style_setup()
@@ -3494,6 +4315,15 @@ class ZapretApp:
         except Exception:
             pass
         self._repaint_combo_popups()
+        # кастомные виджеты перекрашиваются сами
+        try:
+            for w in list(THEMED):
+                try:
+                    w.apply_theme()
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _repaint_combo_popups(self):
         """Уже созданные выпадашки комбобоксов читают цвета при создании —
@@ -3530,11 +4360,11 @@ class ZapretApp:
     def _fill_font_boxes(self):
         try:
             fams = available_fonts(FONT_WHITELIST)
-            self.font_box.config(values=fams)
+            self.font_box.set_values(fams)
             if self.font_var.get() not in fams and fams:
                 self.font_var.set(fams[0])
             mams = available_fonts(MONO_WHITELIST)
-            self.monofont_box.config(values=mams)
+            self.monofont_box.set_values(mams)
             if self.monofont_var.get() not in mams and mams:
                 self.monofont_var.set(mams[0])
         except Exception:
@@ -3553,7 +4383,7 @@ class ZapretApp:
         self.cfg["mono_font"] = new_mono
         save_config(self.cfg)
         log_action(f"Шрифты: {new_font} / {new_scale} / {new_mono} — нужен перезапуск")
-        if messagebox.askyesno(APP_NAME, "Сохранено. Перезапустить программу сейчас?"):
+        if self.dlg_ask("Сохранено. Перезапустить программу сейчас?"):
             self.restart_app()
 
     def restart_app(self):
@@ -3562,14 +4392,14 @@ class ZapretApp:
             save_config(self.cfg)
             os.execv(sys.executable, [sys.executable] + sys.argv)
         except Exception as e:
-            messagebox.showerror(APP_NAME, f"Не удалось перезапустить: {e}")
+            self.dlg_error(f"Не удалось перезапустить: {e}")
 
     def save_targets(self):
         self.cfg["targets_override"] = self.targets_txt.get("1.0", "end").strip()
         save_config(self.cfg)
         self.engine.cfg = self.cfg
         log_action("Обновлён список целей для проверок")
-        messagebox.showinfo(APP_NAME, "Цели сохранены")
+        self.dlg_info("Цели сохранены")
 
     # ---------- static ----------
     def refresh_all_static(self):
@@ -3604,7 +4434,7 @@ class ZapretApp:
         self.refresh_active_bar()
 
     def ask_zapret_root_first(self):
-        if messagebox.askyesno(APP_NAME, "Не найдена папка zapret.\nВыбрать корневую папку (где лежат general*.bat) сейчас?"):
+        if self.dlg_ask("Не найдена папка zapret.\nВыбрать корневую папку (где лежат general*.bat) сейчас?"):
             self.show_page("settings")
             self.browse_root()
             self.save_root()
@@ -3733,50 +4563,6 @@ def main():
         log_action(f"Иконка: {_icon_src}")
     except Exception:
         pass
-    # в шапке окна иконку не показываем (только заголовок),
-    # в таскбаре/Alt+Tab остаётся Z: в SMALL ставим полностью прозрачную
-    # иконку 16x16 (надёжнее NULL — не зависит от fallback-ов).
-    # Ставим после показа окна: Tk перетирает иконки при map.
-    _blank_hicon = {"h": None}
-
-    def _blank_caption_icon():
-        try:
-            from ctypes import wintypes
-            gdi = ctypes.windll.gdi32
-            u = ctypes.windll.user32
-            hwnd = toplevel_hwnd(root)
-            if not hwnd:
-                return False
-            if _blank_hicon["h"] is None:
-                mask = (ctypes.c_byte * (16 * 16 // 8))(*([0xFF] * (16 * 16 // 8)))
-                xor = (ctypes.c_ulong * (16 * 16))(*([0] * (16 * 16)))
-                hbm_mask = gdi.CreateBitmap(16, 16, 1, 1, mask)
-                hbm_color = gdi.CreateBitmap(16, 16, 1, 32, xor)
-
-                class ICONINFO(ctypes.Structure):
-                    _fields_ = [("fIcon", wintypes.BOOL),
-                                ("xHotspot", wintypes.DWORD),
-                                ("yHotspot", wintypes.DWORD),
-                                ("hbmMask", wintypes.HBITMAP),
-                                ("hbmColor", wintypes.HBITMAP)]
-
-                ii = ICONINFO(True, 0, 0, hbm_mask, hbm_color)
-                _blank_hicon["h"] = u.CreateIconIndirect(ctypes.byref(ii))
-                gdi.DeleteObject(hbm_mask)
-                gdi.DeleteObject(hbm_color)
-            if _blank_hicon["h"]:
-                u.SendMessageW(hwnd, 0x0080, 0, _blank_hicon["h"])
-                return True
-            return False
-        except Exception as e:
-            print(f"[icon] caption: {e}")
-            return False
-
-    try:
-        root.bind("<Map>", lambda _e: root.after(300, _blank_caption_icon), add="+")
-        root.after(1500, _blank_caption_icon)
-    except Exception as e:
-        print(f"[icon] caption: {e}")
     # системная шторка в цветах темы + рамка в цвет фона (Windows 11 DWM)
     try:
         root.update_idletasks()
