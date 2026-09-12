@@ -4,3 +4,8 @@ __pycache__/
 *.pyc
 *.pyo
 *.log
+# локальный лаунчер и рантайм — создаются install.bat под конкретный ПК
+zapret-manager.exe
+python3*.dll
+vcruntime*.dll
+pyvenv.cfg

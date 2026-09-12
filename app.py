@@ -36,7 +36,7 @@ try:
 except ImportError:
     winreg = None
 
-APP_VERSION = "1.7.2"
+APP_VERSION = "1.8.0"
 APP_NAME = "Zapret Manager"
 APP_REPO = "PROPANE3/zapret-manager"
 
@@ -545,14 +545,19 @@ def probe_target(name, val, timeout, ping_thr, ping_cap_ms, repeat):
             "ping_ok": ping_ok, "http_ok": http_ok, "ping_only": ping_only}
 
 
-def wait_winws_ready(timeout_s=6.0):
-    """Ждём появления winws polling'ом вместо фиксированного sleep — быстрее в ~2 раза."""
+ULTRA_FINALISTS = 6
+ULTRA_SCREEN_TARGETS = ("YouTubeWeb", "DiscordMain")
+
+
+def wait_winws_ready(timeout_s=6.0, fast=False):
+    """Ждём появления winws polling'ом вместо фиксированного sleep."""
+    poll, settle = (0.25, 0.3) if fast else (0.35, 0.4)
     t0 = time.time()
     while time.time() - t0 < timeout_s:
         if winws_running():
-            time.sleep(0.5)
+            time.sleep(settle)
             return True
-        time.sleep(0.4)
+        time.sleep(poll)
     return winws_running()
 
 
@@ -927,10 +932,6 @@ def create_desktop_shortcut():
 # ---- автозагрузка самого приложения ----
 APP_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 APP_RUN_NAME = "ZapretManager"
-
-
-APP_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-APP_RUN_NAME = "ZapretManager"
 APP_TASK_NAME = "ZapretManager"
 
 
@@ -1114,43 +1115,17 @@ class CheckEngine:
         if had_service:
             if log_cb:
                 log_cb("Обнаружена служба zapret — для честной проверки она будет временно остановлена и потом возвращена.")
-        if log_cb:
-            modetxt = ('БЫСТРЫЙ (Discord+YouTube, ' + str(len(targets)) + ' целей, повторов: ' + str(repeat) + ', потоков: ' + str(workers) + ')'
-                       if mode == 'quick' else 'ПОЛНЫЙ (' + str(len(targets)) + ' целей, потоков: ' + str(workers) + ')')
-            log_cb(f"Режим: {modetxt} — цели проверяются параллельно."
-                   + (" ТУРБО: приоритет процесса повышен." if turbo else ""))
-        # остановить всё перед тестами
-        stop_winws()
-        time.sleep(0.6)
-        for idx, bat in enumerate(bat_list):
-            if self.cancel_flag.is_set():
-                break
+        if mode == "ultra":
+            self._ultra_loop(bat_list, targets, timeout, ping_thr, repeat,
+                             workers, turbo, all_results, progress_cb, log_cb)
+        else:
             if log_cb:
-                log_cb(f"[{idx+1}/{len(bat_list)}] Запуск {bat} …")
-            t0 = time.time()
-            start_bat_minimized(self.cfg["zapret_root"], bat)
-            if not wait_winws_ready(6.0):
-                if log_cb:
-                    log_cb(f"  {bat}: winws не запустился — пропуск")
-                all_results[bat] = {"ok": 0, "fail": len(targets), "rows": [],
-                                    "started": False, "score": -1}
-                if progress_cb:
-                    progress_cb(idx + 1, len(bat_list), bat, -1, all_results[bat])
-                continue
-            rows = self.probe_many(targets, timeout, ping_thr, repeat, workers)
-            ok = sum(1 for r in rows if r["http_ok"] is True)
-            fail = sum(1 for r in rows if r["http_ok"] is False)
-            ping_ok_n = sum(1 for r in rows if r["ping_ok"])
-            dt = time.time() - t0
-            score = ok * 10 + ping_ok_n
-            all_results[bat] = {"ok": ok, "fail": fail, "ping_ok": ping_ok_n,
-                                "rows": rows, "started": True, "score": score}
-            if log_cb:
-                log_cb(f"  {bat}: HTTP OK={ok} ERR={fail} PingOK={ping_ok_n} score={score} ({dt:.0f} c)")
-            if progress_cb:
-                progress_cb(idx + 1, len(bat_list), bat, score, all_results[bat])
-            stop_winws()
-            time.sleep(0.5)
+                modetxt = ('БЫСТРЫЙ (Discord+YouTube, ' + str(len(targets)) + ' целей, повторов: ' + str(repeat) + ', потоков: ' + str(workers) + ')'
+                           if mode == 'quick' else 'ПОЛНЫЙ (' + str(len(targets)) + ' целей, потоков: ' + str(workers) + ')')
+                log_cb(f"Режим: {modetxt} — цели проверяются параллельно."
+                       + (" ТУРБО: приоритет процесса повышен." if turbo else ""))
+            self._seq_loop(bat_list, targets, timeout, ping_thr, repeat,
+                           workers, len(bat_list), all_results, progress_cb, log_cb)
         stop_winws()
         # сохранить историю: используемый конфиг + пинги целевых сервисов
         try:
@@ -1162,10 +1137,13 @@ class CheckEngine:
                 summary[k] = {"ok": v["ok"], "fail": v["fail"],
                               "ping_ok": v.get("ping_ok", 0), "score": v["score"],
                               "discord_ms": dm, "youtube_ms": ym,
-                              "grade": config_grade(dm, ym)[0] if v.get("started") else "Не работает"}
+                              "grade": config_grade(dm, ym)[0] if v.get("started") else "Не работает",
+                              "final": bool(v.get("final", True)),
+                              "mode": mode}
             with open(path, "w", encoding="utf-8") as f:
                 json.dump({"time": ts,
                            "active": self.cfg.get("active_config", ""),
+                           "mode": mode,
                            "summary": summary,
                            "details": all_results}, f, ensure_ascii=False, indent=2)
         except Exception:
@@ -1174,6 +1152,136 @@ class CheckEngine:
             set_process_priority(False)  # вернуть обычный приоритет
         self.running = False
         return all_results
+
+    def _seq_loop(self, bat_list, targets, timeout, ping_thr, repeat,
+                  workers, total, all_results, progress_cb, log_cb):
+        """Обычный последовательный замер каждого конфига."""
+        # остановить всё перед тестами
+        stop_winws()
+        time.sleep(0.4)
+        for idx, bat in enumerate(bat_list):
+            if self.cancel_flag.is_set():
+                break
+            if log_cb:
+                log_cb(f"[{idx+1}/{total}] Запуск {bat} …")
+            t0 = time.time()
+            start_bat_minimized(self.cfg["zapret_root"], bat)
+            if not wait_winws_ready(6.0):
+                if log_cb:
+                    log_cb(f"  {bat}: winws не запустился — пропуск")
+                all_results[bat] = {"ok": 0, "fail": len(targets), "rows": [],
+                                    "started": False, "score": -1, "final": True}
+                if progress_cb:
+                    progress_cb(idx + 1, total, bat, -1, all_results[bat])
+                continue
+            rows = self.probe_many(targets, timeout, ping_thr, repeat, workers)
+            ok = sum(1 for r in rows if r["http_ok"] is True)
+            fail = sum(1 for r in rows if r["http_ok"] is False)
+            ping_ok_n = sum(1 for r in rows if r["ping_ok"])
+            dt = time.time() - t0
+            score = ok * 10 + ping_ok_n
+            all_results[bat] = {"ok": ok, "fail": fail, "ping_ok": ping_ok_n,
+                                "rows": rows, "started": True, "score": score,
+                                "final": True}
+            if log_cb:
+                log_cb(f"  {bat}: HTTP OK={ok} ERR={fail} PingOK={ping_ok_n} score={score} ({dt:.0f} c)")
+            if progress_cb:
+                progress_cb(idx + 1, total, bat, score, all_results[bat])
+            stop_winws()
+            time.sleep(0.3)
+
+    def _ultra_loop(self, bat_list, targets, timeout, ping_thr, repeat,
+                    workers, turbo, all_results, progress_cb, log_cb):
+        """УЛЬТРА-турнир: дешёвый отсев всех -> точный замер топ-N.
+
+        Честное предупреждение: одновременно гнать все конфиги НЕЛЬЗЯ —
+        все winws делят один драйвер WinDivert и один сетевой путь, стратегии
+        стали бы кромсать одни и те же пакеты и замер показал бы кашу, а не
+        качество конфига. Поэтому отсев идёт по очереди, но очень дёшево
+        (2 ключевые цели, 1 повтор), а точно меряем только финалистов.
+        Пинги отсева — ПРИБЛИЗИТЕЛЬНЫЕ (помечены ≈).
+        """
+        screen = [(n, v) for n, v in targets if n in ULTRA_SCREEN_TARGETS]
+        if len(screen) < 2:
+            screen = targets[:2]
+        total = len(bat_list)
+        n_fin = min(ULTRA_FINALISTS, total)
+        grand = total + n_fin
+        if log_cb:
+            log_cb(f"Режим УЛЬТРА: отсев {total} конфигов по {len(screen)} целям "
+                   f"(1 повтор, таймаут 3с), затем точный замер топ-{n_fin}."
+                   + (" ТУРБО: приоритет процесса повышен." if turbo else ""))
+            log_cb("Почему не все сразу: конфиги делят один WinDivert — "
+                   "параллельный запуск испортил бы замер.")
+        stop_winws()
+        time.sleep(0.4)
+        order = list(bat_list)
+        # --- фаза 1: отсев ---
+        for idx, bat in enumerate(order):
+            if self.cancel_flag.is_set():
+                break
+            if log_cb:
+                log_cb(f"[отсев {idx+1}/{total}] {bat} …")
+            t0 = time.time()
+            start_bat_minimized(self.cfg["zapret_root"], bat)
+            if not wait_winws_ready(4.0, fast=True):
+                if log_cb:
+                    log_cb(f"  {bat}: winws не запустился — пропуск")
+                all_results[bat] = {"ok": 0, "fail": len(screen), "rows": [],
+                                    "started": False, "score": -1, "final": False}
+                if progress_cb:
+                    progress_cb(idx + 1, grand, bat, -1, all_results[bat])
+                continue
+            rows = self.probe_many(screen, 3, ping_thr, 1, workers)
+            ok = sum(1 for r in rows if r["http_ok"] is True)
+            fail = sum(1 for r in rows if r["http_ok"] is False)
+            ping_ok_n = sum(1 for r in rows if r["ping_ok"])
+            score = ok * 10 + ping_ok_n
+            all_results[bat] = {"ok": ok, "fail": fail, "ping_ok": ping_ok_n,
+                                "rows": rows, "started": True, "score": score,
+                                "final": False}
+            if log_cb:
+                log_cb(f"  {bat}: отсев OK={ok} ERR={fail} (~{time.time()-t0:.0f} c)")
+            if progress_cb:
+                progress_cb(idx + 1, grand, bat, score, all_results[bat])
+            stop_winws()
+            time.sleep(0.3)
+        if self.cancel_flag.is_set():
+            return
+        # --- фаза 2: финал ---
+        ranked = sorted(all_results.items(), key=lambda kv: -kv[1]["score"])
+        finalists = [b for b, _ in ranked[:n_fin]]
+        if log_cb:
+            log_cb(f"Финалисты топ-{len(finalists)}: {', '.join(finalists)} — точный замер…")
+        for j, bat in enumerate(finalists):
+            if self.cancel_flag.is_set():
+                break
+            if log_cb:
+                log_cb(f"[финал {j+1}/{len(finalists)}] {bat} …")
+            t0 = time.time()
+            start_bat_minimized(self.cfg["zapret_root"], bat)
+            if not wait_winws_ready(6.0):
+                if log_cb:
+                    log_cb(f"  {bat}: winws не запустился в финале")
+                all_results[bat]["final"] = True
+                if progress_cb:
+                    progress_cb(total + j + 1, grand, bat,
+                                all_results[bat]["score"], all_results[bat])
+                continue
+            rows = self.probe_many(targets, timeout, ping_thr, repeat, workers)
+            ok = sum(1 for r in rows if r["http_ok"] is True)
+            fail = sum(1 for r in rows if r["http_ok"] is False)
+            ping_ok_n = sum(1 for r in rows if r["ping_ok"])
+            score = ok * 10 + ping_ok_n
+            all_results[bat] = {"ok": ok, "fail": fail, "ping_ok": ping_ok_n,
+                                "rows": rows, "started": True, "score": score,
+                                "final": True}
+            if log_cb:
+                log_cb(f"  {bat}: финал OK={ok} ERR={fail} score={score} ({time.time()-t0:.0f} c)")
+            if progress_cb:
+                progress_cb(total + j + 1, grand, bat, score, all_results[bat])
+            stop_winws()
+            time.sleep(0.3)
 
 
 # ================= UI =================
@@ -1709,11 +1817,13 @@ class ZapretApp:
             v.set(val)
 
     def _grade_row(self, bat, v):
-        """Строка таблицы пингов: (values, tag)."""
+        """Строка таблицы пингов: (values, tag). Нефиналисты Ультры — с ≈."""
         if not v.get("started"):
             return (bat, "—", "—", "Не работает"), "g0"
         dm, ym = service_pings(v.get("rows", []))
         text, _color, rank = config_grade(dm, ym)
+        if v.get("final", True) is False:
+            text += " ≈"
         return (bat, fmt_ping(dm), fmt_ping(ym), text), f"g{rank}"
 
     def _insert_grade_row(self, bat, v):
@@ -1846,7 +1956,9 @@ class ZapretApp:
         self.prog_lbl.config(text=f"{len(self.last_results)} • готово • лучший: {best}")
         run_log_write(f"✔ Готово. Лучший конфиг: {best} (score={best_score})")
         log_action(f"Проверка завершена. Лучший: {best} (score={best_score})")
-        self.msg_q.put(("toast", ("Проверка завершена", f"Лучший конфиг: {best}", GREEN)))
+        self.msg_q.put(("toast", ("Проверка завершена",
+                                  f"Лучший конфиг: {best}" + (" (ультра, топ-6 точно)" if self.cfg.get("check_mode") == "ultra" else ""),
+                                  GREEN)))
         self.refresh_active_bar()
         if best and not self.cfg.get("active_config"):
             self.cfg["active_config"] = best
@@ -2284,13 +2396,16 @@ class ZapretApp:
             self.log_view.insert("end", f"Время: {data.get('time','')}\n")
             if data.get("active"):
                 self.log_view.insert("end", f"Используемый конфиг: {data['active']}\n")
+            if data.get("mode") == "ultra":
+                self.log_view.insert("end", "Режим УЛЬТРА: точные замеры только у финалистов, остальные ≈\n")
             self.log_view.insert("end", "\n")
             for cfg, s in data.get("summary", {}).items():
                 dm = s.get("discord_ms")
                 ym = s.get("youtube_ms")
+                approx = "" if s.get("final", True) else "≈"
                 self.log_view.insert(
                     "end", f"{cfg}: Discord={fmt_ping(dm)} YouTube={fmt_ping(ym)} "
-                           f"[{s.get('grade', '?')}]  (HTTP OK={s['ok']} ERR={s['fail']})\n")
+                           f"[{s.get('grade', '?')}{approx}]  (HTTP OK={s['ok']} ERR={s['fail']})\n")
         except Exception as e:
             pass
 
@@ -2471,17 +2586,23 @@ class ZapretApp:
     def _build_set_speed(self):
         inner = self._set_scroll(self.set_pages["speed"])
         tk.Label(inner, text="Скорость проверки", bg=CARD, fg=TEXT, font=(FONT, 11, "bold")).pack(anchor="w", padx=8, pady=(8, 2))
-        self.speed_desc = tk.Label(inner, text="Быстрый режим проверяет только Discord + YouTube + Google параллельно.\n"
-                             "Ручная проверка идёт в ТУРБО: максимум потоков + повышенный приоритет.\n"
-                             "Автомониторинг — наоборот в ЭКО: 3 потока и фоновый приоритет.",
+        self.speed_desc = tk.Label(inner, text="Быстрый: только Discord + YouTube + Google, параллельно. Ручная — ТУРБО (потоки+приоритет), авто — ЭКО.\n"
+                             "УЛЬТРА — турнир: дешёвый отсев всех по 2 целям, затем точный замер топ-6.\n"
+                             "Все сразу нельзя: конфиги делят один WinDivert и испортят замер друг другу.\n"
+                             "Пинги отсева — ПРИБЛИЗИТЕЛЬНЫЕ (≈), точные — только у финалистов.",
                  bg=CARD, fg=MUTED, font=(FONT, 9), wraplength=650, justify="left")
         self.speed_desc.pack(anchor="w", padx=8)
         self._autowrap(self.speed_desc, self.set_pages["speed"], pad=260)
         spd = tk.Frame(inner, bg=CARD)
         spd.pack(fill="x", padx=8, pady=8)
         tk.Label(spd, text="Режим проверки:", bg=CARD, fg=MUTED, font=(FONT, 10)).grid(row=0, column=0, sticky="w", pady=4)
-        self.mode_var = tk.StringVar(value="Быстрый (Discord+YouTube)" if self.cfg.get("check_mode", "quick") == "quick" else "Полный (все цели)")
-        ttk.Combobox(spd, textvariable=self.mode_var, values=["Быстрый (Discord+YouTube)", "Полный (все цели)"],
+        _modes = {"quick": "Быстрый (Discord+YouTube)", "full": "Полный (все цели)",
+                  "ultra": "Ультра (турнир: отсев + топ-6)"}
+        self.mode_var = tk.StringVar(value=_modes.get(self.cfg.get("check_mode", "quick"),
+                                                      "Быстрый (Discord+YouTube)"))
+        ttk.Combobox(spd, textvariable=self.mode_var,
+                     values=["Быстрый (Discord+YouTube)", "Полный (все цели)",
+                             "Ультра (турнир: отсев + топ-6)"],
                      state="readonly", width=28).grid(row=0, column=1, padx=8, sticky="w")
         tk.Label(spd, text="Повторов HTTP (зачёт при 1 успехе):", bg=CARD, fg=MUTED, font=(FONT, 10)).grid(row=1, column=0, sticky="w", pady=4)
         self.repeat_var = tk.StringVar(value=str(self.cfg.get("check_repeat", 2)))
@@ -2686,7 +2807,13 @@ class ZapretApp:
         except ValueError:
             messagebox.showerror(APP_NAME, "Введите числа")
             return
-        self.cfg["check_mode"] = "quick" if "Быстрый" in self.mode_var.get() else "full"
+        mv = self.mode_var.get()
+        if "Ультра" in mv:
+            self.cfg["check_mode"] = "ultra"
+        elif "Быстрый" in mv:
+            self.cfg["check_mode"] = "quick"
+        else:
+            self.cfg["check_mode"] = "full"
         self.cfg["check_repeat"] = rep
         self.cfg["check_workers"] = wor
         save_config(self.cfg)
@@ -3010,6 +3137,30 @@ def main():
         log_action(f"Иконка: {_icon_src}")
     except Exception:
         pass
+    # в шапке окна иконку не показываем (только заголовок),
+    # в таскбаре/Alt+Tab остаётся Z: гасим SMALL, BIG не трогаем.
+    # Tk ставит иконки заново при показе окна — поэтому после map.
+    def _null_caption_icon():
+        try:
+            _hwnd = toplevel_hwnd(root)
+            if _hwnd:
+                u = ctypes.windll.user32
+                u.SendMessageW(_hwnd, 0x0080, 0, 0)  # WM_SETICON, ICON_SMALL, NULL
+                try:
+                    if ctypes.sizeof(ctypes.c_void_p) == 8:
+                        u.SetClassLongPtrW(_hwnd, -34, 0)  # GCLP_HICONSM
+                    else:
+                        u.SetClassLongW(_hwnd, -34, 0)
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"[icon] caption: {e}")
+
+    try:
+        _null_caption_icon()
+        root.bind("<Map>", lambda _e: _null_caption_icon(), add="+")
+    except Exception as e:
+        print(f"[icon] caption: {e}")
     # системная шторка в цветах темы + рамка в цвет фона (Windows 11 DWM)
     try:
         root.update_idletasks()
