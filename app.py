@@ -36,9 +36,10 @@ try:
 except ImportError:
     winreg = None
 
-APP_VERSION = "1.9.0"
+APP_VERSION = "1.10.0"
 APP_NAME = "Zapret Manager"
 APP_REPO = "PROPANE3/zapret-manager"
+APP_ID = "Flowseal.ZapretManager"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -71,6 +72,25 @@ MONO = "Consolas"
 # Даёт ~3x ускорение: 7 целей вместо 16.
 QUICK_NAMES = ("DiscordMain", "DiscordGateway", "YouTubeWeb", "YouTubeShort",
                "YouTubeVideoRedirect", "GoogleMain", "CloudflareDNS1111")
+
+MODE_LABELS = {"quick": "Быстрый (Discord+YouTube)",
+               "full": "Полный (все цели)",
+               "ultra": "Ультра (турнир: отсев + топ-6)"}
+
+
+def mode_label(mode):
+    return MODE_LABELS.get(mode, MODE_LABELS["quick"])
+
+
+def mode_key(label):
+    for k, v in MODE_LABELS.items():
+        if v in (label or "") or (label or "") in v:
+            return k
+    if "Ультра" in (label or ""):
+        return "ultra"
+    if "Полный" in (label or ""):
+        return "full"
+    return "quick"
 
 # ---------- темы оформления (имя -> палитра) ----------
 THEMES = {
@@ -833,6 +853,62 @@ def toplevel_hwnd(root):
     return None
 
 
+_VPN_RE = None
+
+
+def _vpn_re():
+    global _VPN_RE
+    if _VPN_RE is None:
+        _VPN_RE = re.compile(
+            r"VPN|TAP|TUN|WireGuard|OpenVPN|NordLynx|ExpressVPN|Surfshark|"
+            r"Proton|Wintun|WireSock|AnyConnect|Forti|GlobalProtect|Zscaler|"
+            r"WARP|Check\s?Point|Hamachi|Radmin|ZeroTier|Tailscale|NEAgent",
+            re.IGNORECASE)
+    return _VPN_RE
+
+
+def vpn_status(timeout=12):
+    """VPN активен? Возвращает (active: bool, names: list).
+
+    Смотрит поднятые адаптеры с VPN-признаками в имени/описании + классические
+    RAS-подключения. Только stdlib (powershell встроен в Windows).
+    """
+    names = []
+    try:
+        rc, out = run_cmd(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             "Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | "
+             "ForEach-Object { $_.Name + '|' + $_.InterfaceDescription }"],
+            timeout=timeout)
+        if rc == 0:
+            rx = _vpn_re()
+            for line in out.splitlines():
+                if "|" not in line:
+                    continue
+                nm, desc = line.split("|", 1)
+                if rx.search(nm) or rx.search(desc):
+                    nm = nm.strip()
+                    if nm and nm not in names:
+                        names.append(nm)
+    except Exception:
+        pass
+    try:
+        rc2, out2 = run_cmd(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             "Get-VpnConnection -AllUserConnection -ErrorAction SilentlyContinue | "
+             "Where-Object { $_.ConnectionStatus -eq 'Connected' } | "
+             "ForEach-Object { $_.Name }"],
+            timeout=timeout)
+        if rc2 == 0:
+            for line in out2.splitlines():
+                line = line.strip()
+                if line and line not in names:
+                    names.append(line)
+    except Exception:
+        pass
+    return (len(names) > 0, names)
+
+
 def tint_native_caption(root):
     """Покрасить системную шторку и убрать обрисовку окна (Win11 DWM).
 
@@ -907,6 +983,161 @@ def refresh_icon_cache():
         return False, str(e)
 
 
+def system_toasts_allowed():
+    """Разрешены ли системные уведомления (иначе WinRT молча глотает тосты).
+
+    Возвращает False, если пользователь выключил уведомления в Windows —
+    тогда показываем встроенное окно, чтобы ничего не потерять.
+    """
+    try:
+        if os.name != "nt" or winreg is None:
+            return False
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\PushNotifications") as k:
+            try:
+                v, _ = winreg.QueryValueEx(k, "ToastEnabled")
+                return int(v) != 0
+            except FileNotFoundError:
+                return True  # ключа нет = включены по умолчанию
+    except Exception:
+        return True
+
+
+def notify_windows(title, text):
+    """Тост в Центр уведомлений Windows (notify.ps1 + WinRT).
+
+    Возвращает True, если тост принят системой. Иначе False — caller
+    показывает встроенное всплывающее окно как запасной вариант.
+    """
+    try:
+        if os.name != "nt":
+            return False
+        ps1 = os.path.join(BASE_DIR, "notify.ps1")
+        if not os.path.exists(ps1):
+            return False
+        icon = os.path.join(BASE_DIR, "assets", "icon.png")
+        rc, _ = run_cmd(["powershell", "-NoProfile", "-NonInteractive",
+                         "-ExecutionPolicy", "Bypass", "-File", ps1,
+                         "-Title", str(title)[:120], "-Text", str(text)[:240],
+                         "-AppId", APP_ID,
+                         "-Icon", icon if os.path.exists(icon) else ""],
+                        timeout=20)
+        return rc == 0
+    except Exception:
+        return False
+
+
+def set_lnk_appid(lnk_path, appid):
+    """Прописывает System.AppUserModelID в .lnk — без этого тосты не
+    закрепляются в Центре уведомлений. Только stdlib (ctypes + COM)."""
+    try:
+        if os.name != "nt":
+            return False
+
+        class GUID(ctypes.Structure):
+            _fields_ = [("Data1", ctypes.c_ulong),
+                        ("Data2", ctypes.c_ushort),
+                        ("Data3", ctypes.c_ushort),
+                        ("Data4", ctypes.c_ubyte * 8)]
+
+        class PROPERTYKEY(ctypes.Structure):
+            _fields_ = [("fmtid", GUID), ("pid", ctypes.c_ulong)]
+
+        class PROPVARIANT(ctypes.Structure):
+            _fields_ = [("vt", ctypes.c_ushort),
+                        ("r1", ctypes.c_ushort),
+                        ("r2", ctypes.c_ushort),
+                        ("r3", ctypes.c_ushort),
+                        ("data", ctypes.c_void_p)]
+
+        def _guid(s):
+            s = s.strip("{}")
+            p = s.split("-")
+            d4 = bytes.fromhex(p[3] + p[4])
+            return GUID(int(p[0], 16), int(p[1], 16), int(p[2], 16),
+                        (ctypes.c_ubyte * 8)(*d4))
+
+        ole32 = ctypes.windll.ole32
+        shell32 = ctypes.windll.shell32
+        ole32.CoInitialize(None)
+        try:
+            iid = _guid("{886d8eeb-8cf2-4446-8d02-cdba1dbdcf99}")
+            store = ctypes.c_void_p()
+            shell32.SHGetPropertyStoreFromParsingName.argtypes = [
+                ctypes.c_wchar_p, ctypes.c_void_p, ctypes.c_int,
+                ctypes.POINTER(GUID), ctypes.POINTER(ctypes.c_void_p)]
+            shell32.SHGetPropertyStoreFromParsingName.restype = ctypes.c_long
+            # GPS_READWRITE=2: по умолчанию хранилище только для чтения
+            hr = shell32.SHGetPropertyStoreFromParsingName(
+                lnk_path, None, 2, ctypes.byref(iid), ctypes.byref(store))
+            if hr != 0 or not store.value:
+                return False
+            try:
+                WINF = ctypes.WINFUNCTYPE
+                # COM: object -> vtable -> functions (двойное разыменование!)
+                _p0 = ctypes.cast(store, ctypes.POINTER(ctypes.c_void_p))
+                _fns = ctypes.cast(_p0[0], ctypes.POINTER(ctypes.c_void_p))
+                buf = ctypes.create_unicode_buffer(appid)
+                prop = PROPVARIANT()
+                prop.vt = 31  # VT_LPWSTR
+                prop.data = ctypes.cast(buf, ctypes.c_void_p).value
+                key = PROPERTYKEY(_guid("{9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}"), 5)
+                fn_set = WINF(ctypes.c_long, ctypes.c_void_p,
+                              ctypes.POINTER(PROPERTYKEY),
+                              ctypes.POINTER(PROPVARIANT))(_fns[6])
+                # S_OK=записано, S_FALSE=уже стоит такое же — оба успех
+                if fn_set(store, ctypes.byref(key), ctypes.byref(prop)) not in (0, 1):
+                    return False
+                fn_commit = WINF(ctypes.c_long, ctypes.c_void_p)(_fns[7])
+                if fn_commit(store) not in (0, 1):
+                    return False
+                return True
+            finally:
+                try:
+                    fn_rel = WINF(ctypes.c_ulong, ctypes.c_void_p)(_fns[2])
+                    fn_rel(store)
+                except Exception:
+                    pass
+        finally:
+            try:
+                ole32.CoUninitialize()
+            except Exception:
+                pass
+    except Exception:
+        return False
+
+
+def ensure_startmenu_shortcut():
+    """Ярлык в меню Пуск — без него тосты не закрепляются в Центре уведомлений."""
+    try:
+        if os.name != "nt":
+            return
+        ps = ("$d=[Environment]::GetFolderPath('Programs');"
+              "$p=\"$d\\Zapret Manager.lnk\";"
+              "if (Test-Path -LiteralPath $p) { exit 0 };"
+              "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($p);"
+              f"$s.TargetPath='{BASE_DIR}\\run.bat';"
+              f"$s.WorkingDirectory='{BASE_DIR}';"
+              f"$s.IconLocation='{BASE_DIR}\\assets\\icon.ico,0';"
+              "$s.Description='Zapret Manager';$s.Save()")
+        run_cmd(["powershell", "-NoProfile", "-NonInteractive",
+                 "-ExecutionPolicy", "Bypass", "-Command", ps], timeout=20)
+        # AppID на ярлыке меню Пуск — иначе тосты не закрепляются в Центре
+        try:
+            import subprocess as _sp
+            _out = _sp.run(["powershell", "-NoProfile", "-Command",
+                            "[Environment]::GetFolderPath('Programs')"],
+                           capture_output=True, text=True, timeout=15)
+            _lnk = os.path.join(_out.stdout.strip(),
+                                "Zapret Manager.lnk")
+            if os.path.exists(_lnk):
+                set_lnk_appid(_lnk, APP_ID)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 # ---- ярлык на рабочем столе в один клик ----
 def create_desktop_shortcut():
     """Создать «Zapret Manager.lnk» на рабочем столе (иконка Z, запуск через run.bat).
@@ -933,6 +1164,10 @@ def create_desktop_shortcut():
                            "-ExecutionPolicy", "Bypass", "-Command", ps], timeout=25)
         lnk = (out.strip().splitlines() or [""])[-1].strip()
         if rc == 0 and lnk and os.path.exists(lnk):
+            try:
+                set_lnk_appid(lnk, APP_ID)
+            except Exception:
+                pass
             log_action(f"Создан ярлык на рабочем столе: {lnk}")
             return True, lnk
         return False, (out.strip()[:300] or f"код {rc}")
@@ -1665,15 +1900,35 @@ class ZapretApp:
 
     @staticmethod
     def _tree_wheel(tree):
-        """Колесо над таблицей крутит саму таблицу, а не страницу."""
+        """Колесо над таблицей: если строк мало — крутит страницу,
+        если таблица переполнена — её саму, а упёршись в край — снова страницу."""
         def _h(e):
             try:
+                n = len(tree.get_children())
+                try:
+                    vis = int(tree.cget("height"))
+                except Exception:
+                    vis = 10
+                if n <= max(1, vis):
+                    return None  # влезает — пусть крутит страница
+                top, bottom = tree.yview()
                 steps = int(-1 * (e.delta / 120)) or (-1 if e.delta > 0 else 1)
+                if (steps < 0 and top <= 0.0) or (steps > 0 and bottom >= 1.0):
+                    return None  # край таблицы — отдаём странице
                 tree.yview_scroll(steps, "units")
+                return "break"
             except Exception:
-                pass
-            return "break"
+                return None
         tree.bind("<MouseWheel>", _h)
+
+    def notify(self, title, text, color=ACCENT2):
+        """Уведомление: Центр Windows (если разрешён), иначе встроенный тост."""
+        try:
+            if system_toasts_allowed() and notify_windows(title, text):
+                return
+        except Exception:
+            pass
+        self.toast(title, text, color)
 
     def toast(self, title, text, color=ACCENT2):
         try:
@@ -1706,7 +1961,7 @@ class ZapretApp:
                 elif kind == "status":
                     self.set_status(payload[0], payload[1])
                 elif kind == "toast":
-                    self.toast(payload[0], payload[1], payload[2] if len(payload) > 2 else ACCENT2)
+                    self.notify(payload[0], payload[1], payload[2] if len(payload) > 2 else ACCENT2)
                 elif kind == "actions_refresh":
                     self.refresh_actions()
                 elif kind == "zapret_update":
@@ -1714,6 +1969,8 @@ class ZapretApp:
                     self.show_update_banner(local, remote)
                 elif kind == "app_update":
                     self.show_app_update_banner(payload)
+                elif kind == "vpn":
+                    self._show_vpn(payload[0], payload[1])
         except queue.Empty:
             pass
         self.root.after(250, self.poll_queue)
@@ -1756,6 +2013,24 @@ class ZapretApp:
         self.prog.grid(row=2, column=0, columnspan=4, sticky="ew", padx=16, pady=(0, 4))
         self.prog_lbl = tk.Label(top, text="Готов к проверке", bg=CARD, fg=MUTED, font=(FONT, 9))
         self.prog_lbl.grid(row=3, column=0, columnspan=4, sticky="w", padx=16, pady=(0, 12))
+        # быстрые параметры проверки — на главной, чтобы не лазить в настройки
+        qo, quick = self.card(inner)
+        qo.pack(fill="x", pady=(0, 12))
+        qf = tk.Frame(quick, bg=CARD)
+        qf.pack(fill="x", padx=16, pady=10)
+        tk.Label(qf, text="Режим:", bg=CARD, fg=MUTED, font=(FONT, 10)).pack(side="left")
+        self.q_mode_var = tk.StringVar(value=mode_label(self.cfg.get("check_mode", "quick")))
+        ttk.Combobox(qf, textvariable=self.q_mode_var, values=list(MODE_LABELS.values()),
+                     state="readonly", width=26).pack(side="left", padx=(6, 14))
+        tk.Label(qf, text="Повторы:", bg=CARD, fg=MUTED, font=(FONT, 10)).pack(side="left")
+        self.q_repeat_var = tk.StringVar(value=str(self.cfg.get("check_repeat", 2)))
+        tk.Spinbox(qf, from_=1, to=3, textvariable=self.q_repeat_var, width=4,
+                   bg=CARD2, fg=TEXT, bd=0, buttonbackground=CARD2).pack(side="left", padx=(6, 14))
+        tk.Label(qf, text="Макс. пинг, мс:", bg=CARD, fg=MUTED, font=(FONT, 10)).pack(side="left")
+        self.q_thr_var = tk.StringVar(value=str(self.cfg.get("ping_threshold_ms", 5000)))
+        ttk.Entry(qf, textvariable=self.q_thr_var, width=8).pack(side="left", padx=(6, 14))
+        ttk.Button(qf, text="💾", style="Accent.TButton",
+                   command=self.save_quick_settings).pack(side="left")
         # баннер обновления zapret (скрыт, показывается при наличии апдейта)
         self.update_banner_o, ub = self.card(inner)
         self.update_banner_o.pack(fill="x", pady=(0, 12))
@@ -1775,9 +2050,8 @@ class ZapretApp:
         self.app_banner_o.pack_forget()
         self.app_update_lbl = tk.Label(ab, text="", bg=CARD, fg=ACCENT2, font=(FONT, 10, "bold"))
         self.app_update_lbl.pack(side="left", padx=16, pady=10)
-        ttk.Button(ab, text="Скачать", style="Accent.TButton",
-                   command=lambda: webbrowser.open(
-                       f"https://github.com/{APP_REPO}/releases/latest")).pack(
+        ttk.Button(ab, text="⬇ Обновить сейчас", style="Accent.TButton",
+                   command=self.on_app_update_now).pack(
             side="right", padx=(0, 8), pady=8)
         ttk.Button(ab, text="×", style="Ghost.TButton",
                    command=lambda: self.app_banner_o.pack_forget()).pack(
@@ -1792,6 +2066,8 @@ class ZapretApp:
         self.active_lbl.pack(anchor="w")
         self.svc_lbl = tk.Label(aleft, text="", bg=CARD, fg=MUTED, font=(FONT, 9), anchor="w")
         self.svc_lbl.pack(anchor="w")
+        self.vpn_lbl = tk.Label(aleft, text="VPN: проверка…", bg=CARD, fg=MUTED, font=(FONT, 9), anchor="w")
+        self.vpn_lbl.pack(anchor="w")
         aright = tk.Frame(abar, bg=CARD)
         aright.pack(side="right", padx=16, pady=8)
         ttk.Button(aright, text="✔ Применить выбранный", style="Accent.TButton",
@@ -1924,6 +2200,22 @@ class ZapretApp:
     def selected_configs(self):
         return [k for k, v in self.cfg_vars.items() if v.get()]
 
+    def save_quick_settings(self):
+        """Быстрые параметры с главной: режим + повторы + макс. пинг."""
+        try:
+            rep = min(3, max(1, int(self.q_repeat_var.get())))
+            thr = max(300, int(self.q_thr_var.get()))
+        except ValueError:
+            messagebox.showerror(APP_NAME, "Повторы и пинг — числа")
+            return
+        self.cfg["check_mode"] = mode_key(self.q_mode_var.get())
+        self.cfg["check_repeat"] = rep
+        self.cfg["ping_threshold_ms"] = thr
+        save_config(self.cfg)
+        self.engine.cfg = self.cfg
+        log_action(f"Быстрые параметры: режим={self.cfg['check_mode']}, повторы={rep}, макс. пинг={thr} мс")
+        self.msg_q.put(("toast", ("Параметры", "Сохранено. Применятся к следующей проверке.", GREEN)))
+
     def start_check_selected(self):
         sel = self.selected_configs()
         if not sel:
@@ -2052,6 +2344,92 @@ class ZapretApp:
         self.msg_q.put(("toast", ("Обновление приложения",
                                   f"Доступен {APP_NAME} v{remote}.", YELLOW)))
 
+    def on_app_update_now(self):
+        if self.engine.running:
+            messagebox.showinfo(APP_NAME, "Дождитесь конца проверки, потом обновитесь")
+            return
+        if not messagebox.askyesno(APP_NAME, "Скачать и установить обновление?\nПриложение перезапустится, настройки сохранятся."):
+            return
+        self.set_status("обновление…", YELLOW)
+        threading.Thread(target=self._self_update_worker, daemon=True).start()
+
+    def _self_update_worker(self):
+        import shutil as _sh
+        import tempfile as _tf
+        import zipfile as _zf
+        try:
+            self.msg_q.put(("status", ("скачиваю обновление…", YELLOW)))
+            req = urllib.request.Request(
+                f"https://api.github.com/repos/{APP_REPO}/releases/latest",
+                headers={"User-Agent": "ZapretManager",
+                         "Accept": "application/vnd.github+json"})
+            try:
+                with urllib.request.urlopen(req, timeout=20) as r:
+                    rel = json.load(r)
+            except Exception:
+                raise RuntimeError("релизов пока нет")
+            zurl = ""
+            for a in rel.get("assets", []):
+                nm = a.get("name", "")
+                if nm.lower().startswith("zapretmanager-v") and nm.lower().endswith(".zip"):
+                    zurl = a.get("browser_download_url", "")
+                    break
+            if not zurl:
+                for a in rel.get("assets", []):
+                    if a.get("name", "").lower().endswith(".zip"):
+                        zurl = a.get("browser_download_url", "")
+                        break
+            if not zurl:
+                raise RuntimeError("в релизе нет zip — открываю страницу")
+            tmp = _tf.mkdtemp(prefix="zapretmgr_upd_")
+            zpath = os.path.join(tmp, "update.zip")
+            rq = urllib.request.Request(zurl, headers={"User-Agent": "ZapretManager"})
+            with urllib.request.urlopen(rq, timeout=180) as r, open(zpath, "wb") as f:
+                _sh.copyfileobj(r, f, 1024 * 256)
+            with _zf.ZipFile(zpath) as z:
+                z.extractall(os.path.join(tmp, "u"))
+            # корень обновления: ищем app.py (в корне zip или в одной папке)
+            uroot = os.path.join(tmp, "u")
+            if not os.path.exists(os.path.join(uroot, "app.py")):
+                subs = [p for p in os.listdir(uroot)
+                        if os.path.isdir(os.path.join(uroot, p))]
+                hit = [p for p in subs if os.path.exists(os.path.join(uroot, p, "app.py"))]
+                if not hit:
+                    raise RuntimeError("в архиве нет app.py")
+                uroot = os.path.join(uroot, hit[0])
+            # проверка: новый app.py компилируется
+            import py_compile as _pc
+            _pc.compile(os.path.join(uroot, "app.py"), doraise=True)
+            # копируем всё, кроме данных/кэша/рантайма (они машинные и/или заняты)
+            skip_dirs = {"data", "__pycache__", ".git"}
+            skip_files = {"zapret-manager.exe", "pyvenv.cfg"}
+            n = 0
+            for dirpath, dirnames, filenames in os.walk(uroot):
+                dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+                for fn in filenames:
+                    if fn in skip_files or fn.endswith((".dll", ".pyc")):
+                        continue
+                    src = os.path.join(dirpath, fn)
+                    relp = os.path.relpath(src, uroot)
+                    dst = os.path.join(BASE_DIR, relp)
+                    os.makedirs(os.path.dirname(dst) or BASE_DIR, exist_ok=True)
+                    _sh.copy2(src, dst)
+                    n += 1
+            _sh.rmtree(tmp, ignore_errors=True)
+            save_config(self.cfg)
+            log_action(f"Приложение обновлено ({n} файлов), перезапуск")
+            self.msg_q.put(("toast", ("Обновление установлено", "Перезапускаюсь…", GREEN)))
+            time.sleep(1)
+            self.root.after(0, self.restart_app)
+        except Exception as e:
+            log_action(f"Автообновление не удалось: {e}", "error")
+            self.msg_q.put(("toast", ("Обновление", f"Не удалось: {e}", RED)))
+            try:
+                webbrowser.open(f"https://github.com/{APP_REPO}/releases/latest")
+            except Exception:
+                pass
+            self.msg_q.put(("status", ("готово", MUTED)))
+
     def check_app_updates(self):
         threading.Thread(target=self._app_update_worker, daemon=True).start()
 
@@ -2122,6 +2500,45 @@ class ZapretApp:
             txt = f"Служба: {z}   •   WinDivert: {st['windivert']}   •   winws: {'да' if st['winws'] else 'нет'}"
             self.svc_lbl.config(text=txt, fg=col)
             self.set_status(f"zapret: {z}", col)
+        except Exception:
+            pass
+        self.refresh_vpn_async()
+
+    def refresh_vpn_async(self):
+        """VPN-статус в фоне (подпроцесс ~0.5с), кэш 60с."""
+        try:
+            now = time.time()
+            ts, _, _ = getattr(self, "_vpn_cache", (0, False, []))
+            if now - ts < 60:
+                cached = self._vpn_cache
+                self.msg_q.put(("vpn", (cached[1], cached[2])))
+                return
+            if getattr(self, "_vpn_busy", False):
+                return
+            self._vpn_busy = True
+        except Exception:
+            return
+
+        def _w():
+            try:
+                active, names = vpn_status()
+                self._vpn_cache = (time.time(), active, names)
+                self.msg_q.put(("vpn", (active, names)))
+            except Exception:
+                pass
+            finally:
+                self._vpn_busy = False
+
+        threading.Thread(target=_w, daemon=True).start()
+
+    def _show_vpn(self, active, names):
+        try:
+            if active:
+                self.vpn_lbl.config(
+                    text=f"VPN: ВКЛ ({', '.join(names)[:60]}) — возможны ошибки!",
+                    fg=YELLOW)
+            else:
+                self.vpn_lbl.config(text="VPN: выкл", fg=MUTED)
         except Exception:
             pass
 
@@ -2648,6 +3065,12 @@ class ZapretApp:
         ttk.Entry(r1, textvariable=self.root_var, width=60).pack(side="left", fill="x", expand=True, padx=(0, 8))
         ttk.Button(r1, text="📁 Обзор…", style="Ghost.TButton", command=self.browse_root).pack(side="left")
         ttk.Button(r1, text="💾 Сохранить", style="Accent.TButton", command=self.save_root).pack(side="left", padx=(8, 0))
+        r2 = tk.Frame(inner, bg=CARD)
+        r2.pack(fill="x", padx=8, pady=(4, 8))
+        tk.Label(r2, text="Сломалась папка? Скачает свежий релиз с GitHub Flowseal, ваши списки сохранит.",
+                 bg=CARD, fg=MUTED, font=(FONT, 9)).pack(side="left")
+        ttk.Button(r2, text="🔄 Переустановить Zapret", style="Ghost.TButton",
+                   command=self.on_reinstall_zapret).pack(side="right")
 
     def _build_set_speed(self):
         inner = self._set_scroll(self.set_pages["speed"])
@@ -2661,25 +3084,15 @@ class ZapretApp:
         self._autowrap(self.speed_desc, self.set_pages["speed"], pad=260)
         spd = tk.Frame(inner, bg=CARD)
         spd.pack(fill="x", padx=8, pady=8)
-        tk.Label(spd, text="Режим проверки:", bg=CARD, fg=MUTED, font=(FONT, 10)).grid(row=0, column=0, sticky="w", pady=4)
-        _modes = {"quick": "Быстрый (Discord+YouTube)", "full": "Полный (все цели)",
-                  "ultra": "Ультра (турнир: отсев + топ-6)"}
-        self.mode_var = tk.StringVar(value=_modes.get(self.cfg.get("check_mode", "quick"),
-                                                      "Быстрый (Discord+YouTube)"))
-        ttk.Combobox(spd, textvariable=self.mode_var,
-                     values=["Быстрый (Discord+YouTube)", "Полный (все цели)",
-                             "Ультра (турнир: отсев + топ-6)"],
-                     state="readonly", width=28).grid(row=0, column=1, padx=8, sticky="w")
-        tk.Label(spd, text="Повторов HTTP (зачёт при 1 успехе):", bg=CARD, fg=MUTED, font=(FONT, 10)).grid(row=1, column=0, sticky="w", pady=4)
-        self.repeat_var = tk.StringVar(value=str(self.cfg.get("check_repeat", 2)))
-        tk.Spinbox(spd, from_=1, to=3, textvariable=self.repeat_var, width=6,
-                   bg=CARD2, fg=TEXT, bd=0, buttonbackground=CARD2).grid(row=1, column=1, padx=8, sticky="w")
-        tk.Label(spd, text="Параллельных потоков (турбо добавит сам):", bg=CARD, fg=MUTED, font=(FONT, 10)).grid(row=2, column=0, sticky="w", pady=4)
+        tk.Label(spd, text="Режим, повторы и макс. пинг — на главной (карточка под кнопками проверки).",
+                 bg=CARD, fg=MUTED, font=(FONT, 9), wraplength=600, justify="left").grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=4)
+        tk.Label(spd, text="Параллельных потоков (турбо добавит сам):", bg=CARD, fg=MUTED, font=(FONT, 10)).grid(row=1, column=0, sticky="w", pady=4)
         self.workers_var = tk.StringVar(value=str(self.cfg.get("check_workers", 8)))
         tk.Spinbox(spd, from_=4, to=16, textvariable=self.workers_var, width=6,
-                   bg=CARD2, fg=TEXT, bd=0, buttonbackground=CARD2).grid(row=2, column=1, padx=8, sticky="w")
-        ttk.Button(spd, text="💾 Сохранить скорость", style="Ghost.TButton",
-                   command=self.save_speed).grid(row=3, column=0, pady=10, sticky="w")
+                   bg=CARD2, fg=TEXT, bd=0, buttonbackground=CARD2).grid(row=1, column=1, padx=8, sticky="w")
+        ttk.Button(spd, text="💾 Сохранить потоки", style="Ghost.TButton",
+                   command=self.save_speed).grid(row=2, column=0, pady=10, sticky="w")
 
     def _build_set_monitor(self):
         inner = self._set_scroll(self.set_pages["monitor"])
@@ -2694,9 +3107,8 @@ class ZapretApp:
         tk.Label(grid, text="Интервал проверки (мин):", bg=CARD, fg=MUTED, font=(FONT, 10)).grid(row=0, column=0, sticky="w", pady=4)
         self.interval_var = tk.StringVar(value=str(self.cfg.get("monitor_interval_min", 3)))
         ttk.Entry(grid, textvariable=self.interval_var, width=8).grid(row=0, column=1, padx=8)
-        tk.Label(grid, text="Порог пинга (мс, по умолч. 5000):", bg=CARD, fg=MUTED, font=(FONT, 10)).grid(row=1, column=0, sticky="w", pady=4)
-        self.thr_var = tk.StringVar(value=str(self.cfg.get("ping_threshold_ms", 5000)))
-        ttk.Entry(grid, textvariable=self.thr_var, width=8).grid(row=1, column=1, padx=8)
+        tk.Label(grid, text="Макс. пинг — на главной (общий для проверок и мониторинга).",
+                 bg=CARD, fg=MUTED, font=(FONT, 9)).grid(row=1, column=0, columnspan=2, sticky="w", pady=4)
         tk.Label(grid, text="Таймаут HTTP (с):", bg=CARD, fg=MUTED, font=(FONT, 10)).grid(row=2, column=0, sticky="w", pady=4)
         self.timeout_var = tk.StringVar(value=str(self.cfg.get("check_timeout_s", 5)))
         ttk.Entry(grid, textvariable=self.timeout_var, width=8).grid(row=2, column=1, padx=8)
@@ -2801,6 +3213,135 @@ class ZapretApp:
         ok, msg = refresh_icon_cache()
         self.msg_q.put(("toast", ("Кэш иконок", msg, GREEN if ok else RED)))
 
+    def on_reinstall_zapret(self):
+        root = self.root_var.get().strip() or self.cfg.get("zapret_root", "")
+        if not messagebox.askyesno(
+                APP_NAME,
+                "Переустановить Zapret?\n\n"
+                f"Папка: {root}\n"
+                "Служба и обход остановятся, папка заменится свежим релизом "
+                "с GitHub Flowseal.\nВаши списки (*-user.txt, настройки) сохранятся."):
+            return
+        self.set_status("переустановка zapret…", YELLOW)
+        threading.Thread(target=self._reinstall_worker, args=(root,), daemon=True).start()
+
+    def _reinstall_worker(self, root):
+        import shutil as _sh
+        import tempfile as _tf
+        import zipfile as _zf
+        try:
+            if not root or not os.path.isdir(root):
+                raise RuntimeError("папка zapret не найдена")
+            try:
+                self.msg_q.put(("status", ("переустановка zapret…", YELLOW)))
+            except Exception:
+                pass
+            log_action(f"Переустановка zapret начата: {root}")
+            # 1. остановить всё
+            try:
+                remove_service()
+            except Exception as e:
+                log_action(f"Остановка службы при переустановке: {e}", "error")
+            time.sleep(1)
+            stop_winws()
+            # 2. бэкап пользовательских файлов (корень + lists/)
+            tmp = _tf.mkdtemp(prefix="zapret_mgr_")
+            user_files = []
+            for base in ("", "lists"):
+                d = os.path.join(root, base) if base else root
+                if not os.path.isdir(d):
+                    continue
+                for name in os.listdir(d):
+                    if not (name.endswith("-user.txt") or name == "ipset-all.txt.backup"):
+                        continue
+                    cand = os.path.join(d, name)
+                    if not os.path.isfile(cand):
+                        continue
+                    rel = os.path.relpath(cand, root)
+                    dst = os.path.join(tmp, "user", rel)
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    _sh.copy2(cand, dst)
+                    user_files.append(rel)
+            for rel in (os.path.join("utils", "game_filter.enabled"),
+                        os.path.join("utils", "check_updates.enabled")):
+                cand = os.path.join(root, rel)
+                if os.path.isfile(cand):
+                    dst = os.path.join(tmp, "user", rel)
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    _sh.copy2(cand, dst)
+                    user_files.append(rel)
+            # 3. узнать свежий релиз и скачать zip
+            req = urllib.request.Request(
+                "https://api.github.com/repos/Flowseal/zapret-discord-youtube/releases/latest",
+                headers={"User-Agent": "ZapretManager",
+                         "Accept": "application/vnd.github+json"})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                rel = json.load(r)
+            tag = (rel.get("tag_name") or "").strip()
+            zurl, zname = "", ""
+            for a in rel.get("assets", []):
+                nm = a.get("name", "")
+                if nm.startswith("zapret-discord-youtube-") and nm.endswith(".zip"):
+                    zurl, zname = a.get("browser_download_url", ""), nm
+                    break
+            if not zurl:
+                raise RuntimeError("в релизе нет zip-архива")
+            log_action(f"Скачиваю {zname} ({tag})…")
+            zpath = os.path.join(tmp, zname)
+            rq = urllib.request.Request(zurl, headers={"User-Agent": "ZapretManager"})
+            with urllib.request.urlopen(rq, timeout=120) as r, open(zpath, "wb") as f:
+                _sh.copyfileobj(r, f, 1024 * 256)
+            # 4. распаковать, найти корень (файлы или одна папка)
+            with _zf.ZipFile(zpath) as z:
+                z.extractall(os.path.join(tmp, "fresh"))
+            fresh = os.path.join(tmp, "fresh")
+            items = [p for p in os.listdir(fresh) if p != "__MACOSX"]
+            if len(items) == 1 and os.path.isdir(os.path.join(fresh, items[0])):
+                new_root = os.path.join(fresh, items[0])
+            else:
+                new_root = fresh
+            if not os.path.exists(os.path.join(new_root, "service.bat")):
+                raise RuntimeError("в архиве нет service.bat — странный релиз")
+            # 5. заменить папку (старая -> .prev, откат при ошибке)
+            prev = root.rstrip("\\/") + ".prev"
+            if os.path.exists(prev):
+                _sh.rmtree(prev, ignore_errors=True)
+            os.rename(root, prev)
+            try:
+                _sh.move(new_root, root)
+            except Exception:
+                if os.path.exists(root):
+                    _sh.rmtree(root, ignore_errors=True)
+                os.rename(prev, root)
+                raise
+            # 6. вернуть пользовательские файлы
+            for relp in user_files:
+                src = os.path.join(tmp, "user", relp)
+                if os.path.isfile(src):
+                    dst = os.path.join(root, relp)
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    _sh.copy2(src, dst)
+            _sh.rmtree(prev, ignore_errors=True)
+            _sh.rmtree(tmp, ignore_errors=True)
+            # 7. обновить UI
+            self.cfg["zapret_root"] = root
+            try:
+                self.root_var.set(root)
+            except Exception:
+                pass
+            save_config(self.cfg)
+            self.engine.cfg = self.cfg
+            log_action(f"Zapret переустановлен ({tag}), пользовательских файлов: {len(user_files)}")
+            self.msg_q.put(("toast", ("Zapret переустановлен",
+                                      f"Версия {tag}. Выберите конфиг и примените.", GREEN)))
+            self.root.after(300, self.refresh_all_static)
+        except Exception as e:
+            log_action(f"Переустановка zapret не удалась: {e}", "error")
+            self.msg_q.put(("toast", ("Переустановка", f"Не удалось: {e}", RED)))
+        finally:
+            self.msg_q.put(("status", ("готово", MUTED)))
+            self.msg_q.put(("actions_refresh", None))
+
     def browse_root(self):
         d = filedialog.askdirectory(title="Выберите корневую папку zapret (где лежат general*.bat)")
         if d:
@@ -2850,17 +3391,16 @@ class ZapretApp:
     def save_monitor(self):
         try:
             iv = max(1, int(self.interval_var.get()))
-            th = max(500, int(self.thr_var.get()))
             to = min(30, max(2, int(self.timeout_var.get())))
         except ValueError:
             messagebox.showerror(APP_NAME, "Введите числа")
             return
         self.cfg["monitor_interval_min"] = iv
-        self.cfg["ping_threshold_ms"] = th
         self.cfg["check_timeout_s"] = to
         save_config(self.cfg)
         self.engine.cfg = self.cfg
-        log_action(f"Настройки мониторинга: интервал={iv} мин, порог={th} мс, таймаут={to} c")
+        log_action(f"Настройки мониторинга: интервал={iv} мин, таймаут={to} c "
+                   f"(макс. пинг берётся с главной: {self.cfg.get('ping_threshold_ms')} мс)")
         self.monitor_stop.set()
         if self.cfg.get("monitor_enabled"):
             self.start_monitor()
@@ -2868,23 +3408,14 @@ class ZapretApp:
 
     def save_speed(self):
         try:
-            rep = min(3, max(1, int(self.repeat_var.get())))
             wor = min(16, max(4, int(self.workers_var.get())))
         except ValueError:
-            messagebox.showerror(APP_NAME, "Введите числа")
+            messagebox.showerror(APP_NAME, "Введите число потоков")
             return
-        mv = self.mode_var.get()
-        if "Ультра" in mv:
-            self.cfg["check_mode"] = "ultra"
-        elif "Быстрый" in mv:
-            self.cfg["check_mode"] = "quick"
-        else:
-            self.cfg["check_mode"] = "full"
-        self.cfg["check_repeat"] = rep
         self.cfg["check_workers"] = wor
         save_config(self.cfg)
         self.engine.cfg = self.cfg
-        log_action(f"Скорость проверки: режим={self.cfg['check_mode']}, повторы={rep}, потоки={wor}")
+        log_action(f"Потоки проверки: {wor} (режим/повторы/пинг — на главной)")
         messagebox.showinfo(APP_NAME, "Сохранено. Ручная проверка идёт в турбо-режиме.")
 
     def _mark_theme_buttons(self):
@@ -3148,11 +3679,10 @@ class ZapretApp:
 def main():
     global FONT, MONO
     # AppUserModelID — ПЕРВЫМ делом: иначе таскбар группирует окно
-    # под иконку pythonw.exe вместо нашей Z
+    # под иконку pythonw.exe вместо нашей Z (и тосты не попадут в Центр уведомлений)
     try:
         if os.name == "nt":
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                "Flowseal.ZapretManager")
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
     except Exception:
         pass
     minimized = "--minimized" in sys.argv
@@ -3267,6 +3797,10 @@ def main():
     except Exception:
         pass
     app = ZapretApp(root, minimized=minimized)
+    try:
+        ensure_startmenu_shortcut()
+    except Exception:
+        pass
     root.mainloop()
 
 
