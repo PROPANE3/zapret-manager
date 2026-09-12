@@ -36,10 +36,64 @@ try:
 except ImportError:
     winreg = None
 
-APP_VERSION = "1.12.0"
+APP_VERSION = "1.12.1"
 APP_NAME = "Zapret Manager"
 APP_REPO = "PROPANE3/zapret-manager"
 APP_ID = "Flowseal.ZapretManager"
+
+_LOCK_FD = None
+
+
+def ensure_single_instance():
+    """Только один инстанс: второй молча показывает окно первого и выходит.
+
+    Без этого двойной клик по ярлыку плодит одинаковые окна друг на друге
+    (то самое «двоение») и удваивает нагрузку (лаги, двойные проверки).
+    """
+    global _LOCK_FD
+    try:
+        import msvcrt
+        os.makedirs(DATA_DIR, exist_ok=True)
+        _LOCK_FD = open(os.path.join(DATA_DIR, "instance.lock"), "w")
+        try:
+            msvcrt.locking(_LOCK_FD.fileno(), msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            pass
+    except Exception:
+        pass
+    try:
+        if os.name == "nt":
+            u = ctypes.windll.user32
+            best = {"h": 0}
+
+            @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+            def _cb(h, _):
+                try:
+                    if not u.IsWindowVisible(h):
+                        return True
+                    ln = u.GetWindowTextLengthW(h)
+                    if ln <= 0:
+                        return True
+                    buf = ctypes.create_unicode_buffer(ln + 1)
+                    u.GetWindowTextW(h, buf, ln + 1)
+                    if buf.value.startswith(APP_NAME + " v"):
+                        best["h"] = h
+                        return False
+                except Exception:
+                    pass
+                return True
+
+            u.EnumWindows(_cb, 0)
+            if best["h"]:
+                try:
+                    u.ShowWindow(best["h"], 9)  # SW_RESTORE
+                    u.SetForegroundWindow(best["h"])
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return False
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -949,97 +1003,31 @@ def win_move(root, x, y):
         return False
 
 
-_CHROME_STATE = {"cb": None, "old": None}
-
-
-def setup_borderless(root, titlebar_h=44, btn_reserve_px=150, border_px=8):
+def hide_native_caption(root):
     """Прячем системную шапку (для Win10, где DWM-тинт невозможен).
 
-    Убираем WS_CAPTION у ВНЕШНЕГО окна + отдаём WM_NCCALCSIZE 0 (неклиентской
-    области нет) + нативное перетаскивание/ресайз через WM_NCHITTEST.
-    Таскбар, кнопки, снап, тень сохраняются. Возвращает True при успехе.
+    Только снимаем WS_CAPTION со стилей ВНЕШНЕГО окна. Subclass НЕ ставим:
+    любой хук оконной процедуры ломает восстановление/разворачивание окна.
+    Перетаскивание — ручное (Tk-бинды + WinAPI), ресайз рамкой, снап
+    и таскбар-тоггл — нативные. Возвращает True, если капшен реально снят.
     """
     if os.name != "nt":
         return False
     try:
-        from ctypes import wintypes
-        LRESULT = getattr(wintypes, "LRESULT", ctypes.c_ssize_t)
         user32 = ctypes.windll.user32
         hwnd = toplevel_hwnd(root)
         if not hwnd:
             return False
-
         style = user32.GetWindowLongW(hwnd, -16)
+        if not (style & 0x00C00000):
+            return True
         user32.SetWindowLongW(hwnd, -16, style & ~0x00C00000)
         user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0020)
-
-        WM_NCCALCSIZE = 0x83
-        WM_NCHITTEST = 0x84
-        HTCLIENT, HTCAPTION = 1, 2
-        HTLEFT, HTRIGHT, HTTOP, HTBOTTOM = 10, 11, 12, 15
-        HTTOPLEFT, HTTOPRIGHT = 13, 14
-        HTBOTTOMLEFT, HTBOTTOMRIGHT = 16, 17
-        WNDPROCTYPE = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT,
-                                         wintypes.WPARAM, wintypes.LPARAM)
-        user32.DefWindowProcW.restype = LRESULT
-        user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT,
-                                          wintypes.WPARAM, wintypes.LPARAM]
-        user32.CallWindowProcW.restype = LRESULT
-        user32.CallWindowProcW.argtypes = [ctypes.c_void_p, wintypes.HWND,
-                                           wintypes.UINT, wintypes.WPARAM,
-                                           wintypes.LPARAM]
-        user32.GetWindowRect.argtypes = [wintypes.HWND,
-                                         ctypes.POINTER(wintypes.RECT)]
-
-        def _proc(h, msg, wp, lp):
-            if msg == WM_NCCALCSIZE:
-                if wp:
-                    return 0
-                return user32.DefWindowProcW(h, msg, wp, lp)
-            if msg == WM_NCHITTEST:
-                x = ctypes.c_short(lp & 0xFFFF).value
-                y = ctypes.c_short((lp >> 16) & 0xFFFF).value
-                rc = wintypes.RECT()
-                user32.GetWindowRect(h, ctypes.byref(rc))
-                if not user32.IsZoomed(h):
-                    b = border_px
-                    left = x < rc.left + b
-                    right = x >= rc.right - b
-                    top = y < rc.top + b
-                    bottom = y >= rc.bottom - b
-                    if top and left:
-                        return HTTOPLEFT
-                    if top and right:
-                        return HTTOPRIGHT
-                    if bottom and left:
-                        return HTBOTTOMLEFT
-                    if bottom and right:
-                        return HTBOTTOMRIGHT
-                    if left:
-                        return HTLEFT
-                    if right:
-                        return HTRIGHT
-                    if top:
-                        return HTTOP
-                    if bottom:
-                        return HTBOTTOM
-                if (y - rc.top) < titlebar_h and (rc.right - x) > btn_reserve_px:
-                    return HTCAPTION
-                return HTCLIENT
-            return user32.CallWindowProcW(prev_proc[0], h, msg, wp, lp)
-
-        prev_proc = [_CHROME_STATE["old"]]
-        _CHROME_STATE["cb"] = WNDPROCTYPE(_proc)
-        if ctypes.sizeof(ctypes.c_void_p) == 8:
-            set_ptr = user32.SetWindowLongPtrW
-        else:
-            set_ptr = user32.SetWindowLongW
-        set_ptr.restype = ctypes.c_void_p
-        set_ptr.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
-        _CHROME_STATE["old"] = set_ptr(hwnd, -4, _CHROME_STATE["cb"])
-        return True
+        return not bool(user32.GetWindowLongW(hwnd, -16) & 0x00C00000)
     except Exception:
         return False
+
+
 
 
 _VPN_RE = None
@@ -2321,7 +2309,7 @@ class ZapretApp:
         self._maximized = False
         try:
             root.update_idletasks()
-            self._chrome_ok = setup_borderless(root)
+            self._chrome_ok = hide_native_caption(root)
         except Exception:
             self._chrome_ok = False
         root.bind("<Map>", self._on_map_chrome, add="+")
@@ -2345,12 +2333,11 @@ class ZapretApp:
         self.check_app_updates()
 
     def _on_map_chrome(self, _e=None):
-        # Tk возвращает WS_CAPTION при первом показе — снять снова
+        # Tk возвращает WS_CAPTION при первом показе — снять снова.
+        # Только стиль, без subclass (он ломал restore/maximize).
         try:
-            u = ctypes.windll.user32
-            hwnd = toplevel_hwnd(self.root)
-            if hwnd and (u.GetWindowLongW(hwnd, -16) & 0x00C00000):
-                self._chrome_ok = setup_borderless(self.root)
+            if hide_native_caption(self.root):
+                self._chrome_ok = True
         except Exception:
             pass
 
@@ -2529,8 +2516,8 @@ class ZapretApp:
             pass
 
     def toggle_maximize(self, force=False):
-        if self._chrome_ok and force:
-            return
+        # force игнорируется: нативного даблклика больше нет (нет HTCAPTION),
+        # разворачиваем всегда вручную
         try:
             if self.root.state() == "zoomed":
                 self.root.state("normal")
@@ -2923,6 +2910,11 @@ class ZapretApp:
         tk.Label(qf, text="Макс. пинг, мс:", bg=CARD, fg=MUTED, font=(FONT, 10)).pack(side="left")
         self.q_thr_var = tk.StringVar(value=str(self.cfg.get("ping_threshold_ms", 5000)))
         ttk.Entry(qf, textvariable=self.q_thr_var, width=8).pack(side="left", padx=(6, 14))
+        tk.Label(qf, text="Потоки:", bg=CARD, fg=MUTED, font=(FONT, 10)).pack(side="left")
+        self.q_workers_var = tk.StringVar(value=str(self.cfg.get("check_workers", 8)))
+        DropMenu(qf, variable=self.q_workers_var,
+                 values=[str(n) for n in (4, 6, 8, 10, 12, 16)],
+                 width=8).pack(side="left", padx=(6, 14))
         RButton(qf, text="💾", style="accent", height=30,
                    command=self.save_quick_settings).pack(side="left")
         # баннер обновления zapret (скрыт, показывается при наличии апдейта)
@@ -3095,19 +3087,22 @@ class ZapretApp:
         return [k for k, v in self.cfg_vars.items() if v.get()]
 
     def save_quick_settings(self):
-        """Быстрые параметры с главной: режим + повторы + макс. пинг."""
+        """Быстрые параметры с главной: режим + повторы + макс. пинг + потоки."""
         try:
             rep = min(3, max(1, int(self.q_repeat_var.get())))
             thr = max(300, int(self.q_thr_var.get()))
+            wor = min(16, max(4, int(self.q_workers_var.get())))
         except ValueError:
-            self.dlg_error("Повторы и пинг — числа")
+            self.dlg_error("Повторы, пинг и потоки — числа")
             return
         self.cfg["check_mode"] = mode_key(self.q_mode_var.get())
         self.cfg["check_repeat"] = rep
         self.cfg["ping_threshold_ms"] = thr
+        self.cfg["check_workers"] = wor
         save_config(self.cfg)
         self.engine.cfg = self.cfg
-        log_action(f"Быстрые параметры: режим={self.cfg['check_mode']}, повторы={rep}, макс. пинг={thr} мс")
+        log_action(f"Быстрые параметры: режим={self.cfg['check_mode']}, повторы={rep}, "
+                   f"макс. пинг={thr} мс, потоки={wor}")
         self.msg_q.put(("toast", ("Параметры", "Сохранено. Применятся к следующей проверке.", GREEN)))
 
     def start_check_selected(self):
@@ -3902,7 +3897,6 @@ class ZapretApp:
     # ================= страница НАСТРОЙКИ =================
     SET_SECTIONS = [
         ("folder", "📁  Папка"),
-        ("speed", "🚀  Проверка"),
         ("monitor", "📡  Мониторинг"),
         ("appear", "🎨  Оформление"),
         ("targets", "🎯  Цели"),
@@ -3936,7 +3930,6 @@ class ZapretApp:
             f.grid(row=0, column=0, sticky="nsew")
             self.set_pages[key] = f
         self._build_set_folder()
-        self._build_set_speed()
         self._build_set_monitor()
         self._build_set_appear()
         self._build_set_targets()
@@ -3979,29 +3972,6 @@ class ZapretApp:
                  bg=CARD, fg=MUTED, font=(FONT, 9)).pack(side="left")
         RButton(r2, text="🔄 Переустановить Zapret", style="ghost",
                    command=self.on_reinstall_zapret).pack(side="right")
-
-    def _build_set_speed(self):
-        inner = self._set_scroll(self.set_pages["speed"])
-        tk.Label(inner, text="Скорость проверки", bg=CARD, fg=TEXT, font=(FONT, 11, "bold")).pack(anchor="w", padx=8, pady=(8, 2))
-        self.speed_desc = tk.Label(inner, text="Быстрый: только Discord + YouTube + Google, параллельно. Ручная — ТУРБО (потоки+приоритет), авто — ЭКО.\n"
-                             "УЛЬТРА — турнир: дешёвый отсев всех по 2 целям, затем точный замер топ-6.\n"
-                             "Все сразу нельзя: конфиги делят один WinDivert и испортят замер друг другу.\n"
-                             "Пинги отсева — ПРИБЛИЗИТЕЛЬНЫЕ (≈), точные — только у финалистов.",
-                 bg=CARD, fg=MUTED, font=(FONT, 9), wraplength=650, justify="left")
-        self.speed_desc.pack(anchor="w", padx=8)
-        self._autowrap(self.speed_desc, self.set_pages["speed"], pad=260)
-        spd = tk.Frame(inner, bg=CARD)
-        spd.pack(fill="x", padx=8, pady=8)
-        tk.Label(spd, text="Режим, повторы и макс. пинг — на главной (карточка под кнопками проверки).",
-                 bg=CARD, fg=MUTED, font=(FONT, 9), wraplength=600, justify="left").grid(
-            row=0, column=0, columnspan=2, sticky="w", pady=4)
-        tk.Label(spd, text="Параллельных потоков (турбо добавит сам):", bg=CARD, fg=MUTED, font=(FONT, 10)).grid(row=1, column=0, sticky="w", pady=4)
-        self.workers_var = tk.StringVar(value=str(self.cfg.get("check_workers", 8)))
-        DropMenu(spd, variable=self.workers_var,
-                 values=[str(n) for n in (4, 6, 8, 10, 12, 16)],
-                 width=8).grid(row=1, column=1, padx=8, sticky="w")
-        RButton(spd, text="💾 Сохранить потоки", style="ghost",
-                   command=self.save_speed).grid(row=2, column=0, pady=10, sticky="w")
 
     def _build_set_monitor(self):
         inner = self._set_scroll(self.set_pages["monitor"])
@@ -4313,18 +4283,6 @@ class ZapretApp:
             self.start_monitor()
         self.dlg_info("Сохранено")
 
-    def save_speed(self):
-        try:
-            wor = min(16, max(4, int(self.workers_var.get())))
-        except ValueError:
-            self.dlg_error("Введите число потоков")
-            return
-        self.cfg["check_workers"] = wor
-        save_config(self.cfg)
-        self.engine.cfg = self.cfg
-        log_action(f"Потоки проверки: {wor} (режим/повторы/пинг — на главной)")
-        self.dlg_info("Сохранено. Ручная проверка идёт в турбо-режиме.")
-
     def _mark_theme_buttons(self):
         cur = self.theme_var.get()
         for name, b in self.theme_btns.items():
@@ -4603,7 +4561,23 @@ def main():
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
     except Exception:
         pass
+    # DPI: Per-Monitor V2 СРАЗУ (до создания окон!) — иначе Windows
+    # битмапно тянет окно (двоение/мыло/тормоза на масштабах ≠100%).
+    # Tk 9 сам дорисовывает остальное.
+    try:
+        if os.name == "nt":
+            try:
+                ctypes.windll.user32.SetProcessDpiAwarenessContext(-4)
+            except Exception:
+                try:
+                    ctypes.windll.shcore.SetProcessDpiAwareness(2)
+                except Exception:
+                    ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        pass
     minimized = "--minimized" in sys.argv
+    if not ensure_single_instance():
+        sys.exit(0)
     # тема, шрифт и масштаб из настроек — до построения UI
     _cfg0 = load_config()
     apply_theme(_cfg0.get("theme", "Алый"))
@@ -4656,11 +4630,6 @@ def main():
         root.update_idletasks()
         tint_native_caption(root)
         root.after(1200, lambda: tint_native_caption(root))
-    except Exception:
-        pass
-    # лёгкий DPI-aware
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except Exception:
         pass
     # масштаб интерфейса (шрифты + отступы пропорционально, без лишних затрат)
