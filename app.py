@@ -3138,27 +3138,47 @@ def main():
     except Exception:
         pass
     # в шапке окна иконку не показываем (только заголовок),
-    # в таскбаре/Alt+Tab остаётся Z: гасим SMALL, BIG не трогаем.
-    # Tk ставит иконки заново при показе окна — поэтому после map.
-    def _null_caption_icon():
+    # в таскбаре/Alt+Tab остаётся Z: в SMALL ставим полностью прозрачную
+    # иконку 16x16 (надёжнее NULL — не зависит от fallback-ов).
+    # Ставим после показа окна: Tk перетирает иконки при map.
+    _blank_hicon = {"h": None}
+
+    def _blank_caption_icon():
         try:
-            _hwnd = toplevel_hwnd(root)
-            if _hwnd:
-                u = ctypes.windll.user32
-                u.SendMessageW(_hwnd, 0x0080, 0, 0)  # WM_SETICON, ICON_SMALL, NULL
-                try:
-                    if ctypes.sizeof(ctypes.c_void_p) == 8:
-                        u.SetClassLongPtrW(_hwnd, -34, 0)  # GCLP_HICONSM
-                    else:
-                        u.SetClassLongW(_hwnd, -34, 0)
-                except Exception:
-                    pass
+            from ctypes import wintypes
+            gdi = ctypes.windll.gdi32
+            u = ctypes.windll.user32
+            hwnd = toplevel_hwnd(root)
+            if not hwnd:
+                return False
+            if _blank_hicon["h"] is None:
+                mask = (ctypes.c_byte * (16 * 16 // 8))(*([0xFF] * (16 * 16 // 8)))
+                xor = (ctypes.c_ulong * (16 * 16))(*([0] * (16 * 16)))
+                hbm_mask = gdi.CreateBitmap(16, 16, 1, 1, mask)
+                hbm_color = gdi.CreateBitmap(16, 16, 1, 32, xor)
+
+                class ICONINFO(ctypes.Structure):
+                    _fields_ = [("fIcon", wintypes.BOOL),
+                                ("xHotspot", wintypes.DWORD),
+                                ("yHotspot", wintypes.DWORD),
+                                ("hbmMask", wintypes.HBITMAP),
+                                ("hbmColor", wintypes.HBITMAP)]
+
+                ii = ICONINFO(True, 0, 0, hbm_mask, hbm_color)
+                _blank_hicon["h"] = u.CreateIconIndirect(ctypes.byref(ii))
+                gdi.DeleteObject(hbm_mask)
+                gdi.DeleteObject(hbm_color)
+            if _blank_hicon["h"]:
+                u.SendMessageW(hwnd, 0x0080, 0, _blank_hicon["h"])
+                return True
+            return False
         except Exception as e:
             print(f"[icon] caption: {e}")
+            return False
 
     try:
-        _null_caption_icon()
-        root.bind("<Map>", lambda _e: _null_caption_icon(), add="+")
+        root.bind("<Map>", lambda _e: root.after(300, _blank_caption_icon), add="+")
+        root.after(1500, _blank_caption_icon)
     except Exception as e:
         print(f"[icon] caption: {e}")
     # системная шторка в цветах темы + рамка в цвет фона (Windows 11 DWM)
