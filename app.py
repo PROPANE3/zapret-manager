@@ -36,7 +36,7 @@ try:
 except ImportError:
     winreg = None
 
-APP_VERSION = "1.11.0"
+APP_VERSION = "1.12.0"
 APP_NAME = "Zapret Manager"
 APP_REPO = "PROPANE3/zapret-manager"
 APP_ID = "Flowseal.ZapretManager"
@@ -916,6 +916,39 @@ def toplevel_hwnd(root):
     return None
 
 
+def win_rect(root):
+    """Истинный прямоугольник окна (l, t, r, b).
+
+    winfo_x/y при снятом WS_CAPTION врут (кэш Tk), поэтому геометрию
+    для перетаскивания и позиционирования берём из WinAPI.
+    """
+    try:
+        from ctypes import wintypes
+        u = ctypes.windll.user32
+        hwnd = toplevel_hwnd(root)
+        if not hwnd:
+            return None
+        u.GetWindowRect.argtypes = [wintypes.HWND,
+                                    ctypes.POINTER(wintypes.RECT)]
+        rc = wintypes.RECT()
+        u.GetWindowRect(hwnd, ctypes.byref(rc))
+        return (rc.left, rc.top, rc.right, rc.bottom)
+    except Exception:
+        return None
+
+
+def win_move(root, x, y):
+    try:
+        u = ctypes.windll.user32
+        hwnd = toplevel_hwnd(root)
+        if not hwnd:
+            return False
+        return bool(u.SetWindowPos(hwnd, 0, int(x), int(y), 0, 0,
+                                   0x0001 | 0x0004 | 0x0020))
+    except Exception:
+        return False
+
+
 _CHROME_STATE = {"cb": None, "old": None}
 
 
@@ -993,8 +1026,9 @@ def setup_borderless(root, titlebar_h=44, btn_reserve_px=150, border_px=8):
                 if (y - rc.top) < titlebar_h and (rc.right - x) > btn_reserve_px:
                     return HTCAPTION
                 return HTCLIENT
-            return user32.CallWindowProcW(_CHROME_STATE["old"], h, msg, wp, lp)
+            return user32.CallWindowProcW(prev_proc[0], h, msg, wp, lp)
 
+        prev_proc = [_CHROME_STATE["old"]]
         _CHROME_STATE["cb"] = WNDPROCTYPE(_proc)
         if ctypes.sizeof(ctypes.c_void_p) == 8:
             set_ptr = user32.SetWindowLongPtrW
@@ -1817,6 +1851,18 @@ def _mix_hex(h1, h2, t):
         return h1
 
 
+def _round_points(x0, y0, x1, y1, r, seg=4):
+    """Точки скруглённого прямоугольника для create_polygon(smooth=True)."""
+    import math as _m
+    pts = []
+    for cx, cy, a0 in ((x1 - r, y0 + r, -90), (x1 - r, y1 - r, 0),
+                       (x0 + r, y1 - r, 90), (x0 + r, y0 + r, 180)):
+        for i in range(seg + 1):
+            a = _m.radians(a0 + 90 * i / seg)
+            pts += [cx + r * _m.cos(a), cy + r * _m.sin(a)]
+    return pts
+
+
 class StatusBadge(tk.Canvas):
     """Пилюля статуса в шапке: цветная точка + текст на тонированной подложке."""
 
@@ -1854,11 +1900,8 @@ class StatusBadge(tk.Canvas):
                 bg0 = self._bg0
             pill = _mix_hex(bg0, self._color, 0.16)
             r = h // 2 - 1
-            # скруглённая подложка
-            self.create_oval(2, 2, 2 + 2 * r, 2 + 2 * r, fill=pill, outline="")
-            self.create_oval(w - 2 - 2 * r, 2, w - 2, 2 + 2 * r, fill=pill, outline="")
-            self.create_rectangle(2 + r, 2, w - 2 - r, h - 2, fill=pill, outline="")
-            self.create_rectangle(2, 2 + r, w - 2, h - 2 - r, fill=pill, outline="")
+            self.create_polygon(_round_points(2, 2, w - 2, h - 2, r),
+                                smooth=True, splinesteps=8, fill=pill, outline="")
             cx = 16
             self.create_oval(cx - 6, h // 2 - 6, cx + 6, h // 2 + 6,
                              fill=self._color, outline="")
@@ -1935,28 +1978,17 @@ class RButton(tk.Canvas):
         return (CARD2, TEXT, BORDER)
 
     def _round_rect(self, x0, y0, x1, y1, r, fill, outline, width=1, tag=""):
-        self.create_rectangle(x0 + r, y0, x1 - r, y1, fill=fill,
-                              outline=outline if width else fill, width=width,
-                              tags=tag)
-        self.create_rectangle(x0, y0 + r, x1, y1 - r, fill=fill,
-                              outline=outline if width else fill, width=width,
-                              tags=tag)
-        for cx, cy in ((x0 + r, y0 + r), (x1 - r, y0 + r),
-                       (x0 + r, y1 - r), (x1 - r, y1 - r)):
-            self.create_oval(cx - r, cy - r, cx + r, cy + r, fill=fill,
-                             outline=outline if width else fill, width=width,
-                             tags=tag)
-        # швы между примитивами заливаем те же цвета
-        self.create_rectangle(x0 + r, y0 + 1, x1 - r, y1 - 1, fill=fill,
-                              outline="", tags=tag)
-        self.create_rectangle(x0 + 1, y0 + r, x1 - 1, y1 - r, fill=fill,
-                              outline="", tags=tag)
+        # один smooth-полигон вместо 8 примитивов — дешевле перерисовка
+        pts = _round_points(x0, y0, x1, y1, r)
+        self.create_polygon(pts, smooth=True, splinesteps=8, fill=fill,
+                            outline=outline if width else fill, width=width,
+                            tags=tag)
 
     def _draw(self):
         try:
             self.delete("all")
             bg, fg, edge = self._colors()
-            r = self._h // 2 - 1
+            r = 9  # прямоугольник со скруглёнными углами (не пилюля)
             self._round_rect(2, 2, self._bw - 2, self._h - 2, r, bg, edge,
                              0 if self._style == "accent" and self._enabled else 1)
             self.create_text(self._bw // 2, self._h // 2, text=self._text,
@@ -2091,11 +2123,9 @@ class NiceScroll(tk.Canvas):
             self.delete("all")
             pad, track_h, y0, y1 = self._geom()
             x0, x1 = 2, self._bw - 2
-            r = (x1 - x0) // 2
             col = self._thumb_color()
-            self.create_oval(x0, y0, x0 + 2 * r, y0 + 2 * r, fill=col, outline="")
-            self.create_oval(x0, y1 - 2 * r, x0 + 2 * r, y1, fill=col, outline="")
-            self.create_rectangle(x0, y0 + r, x1, y1 - r, fill=col, outline="")
+            self.create_polygon(_round_points(x0, y0, x1, y1, (x1 - x0) // 2),
+                                smooth=True, splinesteps=8, fill=col, outline="")
             self.configure(cursor="hand2" if self._hover or self._dragging else "arrow")
         except Exception:
             pass
@@ -2429,9 +2459,53 @@ class ZapretApp:
         # даблклик — развернуть (при рабочем borderless этим занимается Windows)
         bar.bind("<Double-Button-1>", lambda e: self.toggle_maximize(force=True))
         left.bind("<Double-Button-1>", lambda e: self.toggle_maximize(force=True))
+        # ручной drag — страховка: работает, только если нативный не двигает
+        # окно сам (сверяем позицию: двигаем лишь пока она стоит на месте).
+        # Так ручной и нативный режимы никогда не дерутся.
+        self._drag = {"x": 0, "y": 0, "wx": 0, "wy": 0, "on": False}
+        bar.bind("<ButtonPress-1>", self._drag_start)
+        bar.bind("<B1-Motion>", self._drag_move)
+        bar.bind("<ButtonRelease-1>", self._drag_stop)
+        left.bind("<ButtonPress-1>", self._drag_start)
+        left.bind("<B1-Motion>", self._drag_move)
+        left.bind("<ButtonRelease-1>", self._drag_stop)
         # тонкая акцентная линия под шапкой
         self.title_strip = tk.Frame(self.root, bg=ACCENT, height=2)
         self.title_strip.grid(row=1, column=0, columnspan=2, sticky="ew")
+
+    def _drag_start(self, e):
+        try:
+            rc = win_rect(self.root) or (e.x_root, e.y_root,
+                                         e.x_root + 100, e.y_root + 100)
+            self._drag.update(x=e.x_root, y=e.y_root,
+                              wx=rc[0], wy=rc[1], on=True)
+        except Exception:
+            pass
+
+    def _drag_move(self, e):
+        d = getattr(self, "_drag", None)
+        if not d or not d.get("on"):
+            return
+        try:
+            if self.root.state() == "zoomed":
+                return
+            rc = win_rect(self.root)
+            if rc is None:
+                return
+            if (rc[0], rc[1]) != (d["wx"], d["wy"]):
+                # нативный drag уже двигает — стоим в стороне, обновляем базу
+                d.update(x=e.x_root, y=e.y_root, wx=rc[0], wy=rc[1])
+                return
+            win_move(self.root, rc[0] + e.x_root - d["x"],
+                     rc[1] + e.y_root - d["y"])
+        except Exception:
+            pass
+
+    def _drag_stop(self, _e=None):
+        try:
+            self._drag["on"] = False
+        except Exception:
+            pass
 
     def _win_min(self):
         try:
@@ -2659,6 +2733,20 @@ class ZapretApp:
             pass
         self.toast(title, text, color)
 
+    def _win_xywh(self):
+        """Позиция+размер окна: правда из WinAPI, запасной — winfo."""
+        try:
+            rc = win_rect(self.root)
+            if rc:
+                return (rc[0], rc[1], rc[2] - rc[0], rc[3] - rc[1])
+        except Exception:
+            pass
+        try:
+            return (self.root.winfo_x(), self.root.winfo_y(),
+                    self.root.winfo_width(), self.root.winfo_height())
+        except Exception:
+            return (100, 100, 1200, 750)
+
     def toast(self, title, text, color=ACCENT2):
         try:
             t = tk.Toplevel(self.root)
@@ -2671,9 +2759,8 @@ class ZapretApp:
             tk.Label(frm, text=text, bg=CARD, fg=TEXT, font=(FONT, 10), anchor="w",
                      wraplength=320, justify="left").pack(fill="x", pady=(4, 0))
             self.root.update_idletasks()
-            x = self.root.winfo_x() + self.root.winfo_width() - 380
-            y = self.root.winfo_y() + self.root.winfo_height() - 160
-            t.geometry(f"360x110+{x}+{y}")
+            x, y, w, h = self._win_xywh()
+            t.geometry(f"360x110+{x + w - 380}+{y + h - 160}")
             t.after(6000, t.destroy)
         except Exception:
             pass
@@ -2681,31 +2768,24 @@ class ZapretApp:
     # ---------- красивые модалки вместо системных messagebox ----------
     def _modal(self, kind, title, text, buttons):
         """Каркас модалки. kind: info|error|ask. buttons: [(label, value, style)].
-        Возвращает value нажатой кнопки (Esc/крест = последнее значение)."""
+        Возвращает value нажатой кнопки (Esc = последнее значение).
+
+        Без затемнения всего экрана: только карточка (overrideredirect+topmost
+        +grab — проверенная видимая комбинация).
+        """
         res = {"v": buttons[-1][1] if buttons else None}
         ov = tk.Toplevel(self.root)
-        try:
-            ov.overrideredirect(True)
-            ov.attributes("-topmost", True)
-            try:
-                ov.attributes("-alpha", 0.55)
-            except Exception:
-                pass
-            ov.configure(bg="black")
-            self.root.update_idletasks()
-            x, y = self.root.winfo_x(), self.root.winfo_y()
-            w, h = self.root.winfo_width(), self.root.winfo_height()
-            ov.geometry(f"{w}x{h}+{x}+{y}")
-        except Exception:
-            pass
+        ov.overrideredirect(True)
+        ov.attributes("-topmost", True)
+        ov.configure(bg=BORDER)
         outer = tk.Frame(ov, bg=BORDER, padx=1, pady=1)
-        outer.place(relx=0.5, rely=0.44, anchor="center")
+        outer.pack(fill="both", expand=True)
         inner = tk.Frame(outer, bg=CARD)
         inner.pack(fill="both", expand=True)
         accent = {"info": ACCENT, "error": RED, "ask": YELLOW}.get(kind, ACCENT)
         tk.Frame(inner, bg=accent, height=4).pack(fill="x")
         body = tk.Frame(inner, bg=CARD)
-        body.pack(fill="both", expand=True, padx=20, pady=16)
+        body.pack(fill="both", expand=True, padx=22, pady=16)
         glyph, gcol = {"info": ("✓", GREEN), "error": ("✕", RED),
                        "ask": ("?", YELLOW)}.get(kind, ("✓", GREEN))
         top = tk.Frame(body, bg=CARD)
@@ -2714,7 +2794,7 @@ class ZapretApp:
         tk.Label(top, text=title, bg=CARD, fg=TEXT, font=(FONT, 12, "bold"),
                  anchor="w").pack(side="left")
         tk.Label(body, text=text, bg=CARD, fg=TEXT, font=(FONT, 10),
-                 wraplength=360, justify="left").pack(fill="x", pady=(0, 14))
+                 wraplength=380, justify="left").pack(fill="x", pady=(0, 14))
         brow = tk.Frame(body, bg=CARD)
         brow.pack(fill="x")
 
@@ -2730,7 +2810,14 @@ class ZapretApp:
                     command=lambda v=val: _done(v)).pack(side="left", padx=(0, 10))
         ov.bind("<Escape>", lambda _e: _done(res["v"]))
         try:
-            # БЕЗ transient: на Tk 9 + Win11 transient прячет overrideredirect-окна!
+            self.root.update_idletasks()
+            ov.update_idletasks()
+            ww, wh = ov.winfo_reqwidth(), ov.winfo_reqheight()
+            rx, ry, rw, rh = self._win_xywh()
+            ov.geometry(f"+{rx + max(0, (rw - ww) // 2)}+{ry + max(0, (rh - wh) // 2)}")
+        except Exception:
+            pass
+        try:
             ov.grab_set()
             ov.wait_window()
         except Exception:
@@ -3468,8 +3555,9 @@ class ZapretApp:
         RButton(btns, text="Отмена", style="ghost", command=d.destroy).pack(side="left")
         try:
             self.root.update_idletasks()
-            x = self.root.winfo_x() + (self.root.winfo_width() - 420) // 2
-            y = self.root.winfo_y() + (self.root.winfo_height() - 220) // 2
+            rx, ry, rw, rh = self._win_xywh()
+            x = rx + (rw - 420) // 2
+            y = ry + (rh - 220) // 2
             d.geometry(f"420x220+{x}+{y}")
         except Exception:
             pass
