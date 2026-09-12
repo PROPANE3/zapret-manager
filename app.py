@@ -36,7 +36,7 @@ try:
 except ImportError:
     winreg = None
 
-APP_VERSION = "1.8.0"
+APP_VERSION = "1.9.0"
 APP_NAME = "Zapret Manager"
 APP_REPO = "PROPANE3/zapret-manager"
 
@@ -549,6 +549,17 @@ ULTRA_FINALISTS = 6
 ULTRA_SCREEN_TARGETS = ("YouTubeWeb", "DiscordMain")
 
 
+def network_alive():
+    """Есть ли вообще сеть: быстрый ping до DNS. False = дальше проверять бессмысленно."""
+    for host in ("1.1.1.1", "8.8.8.8"):
+        try:
+            if ping_host(host, timeout_ms=800) is not None:
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def wait_winws_ready(timeout_s=6.0, fast=False):
     """Ждём появления winws polling'ом вместо фиксированного sleep."""
     poll, settle = (0.25, 0.3) if fast else (0.35, 0.4)
@@ -1031,6 +1042,7 @@ class CheckEngine:
         self.cfg = cfg
         self.cancel_flag = threading.Event()
         self.running = False
+        self.abort_reason = ""  # nonetwork | deadnet | "" (отмена/ок)
 
     def cancel(self):
         self.cancel_flag.set()
@@ -1110,6 +1122,16 @@ class CheckEngine:
             workers = min(16, max(workers, cpu * 2))
             turbo = set_process_priority(True)
         all_results = {}
+        self.abort_reason = ""
+        # гейт: без сети проверять нечего (иначе 22 × таймауты впустую)
+        if not network_alive():
+            if log_cb:
+                log_cb("⛔ Нет сети (не пингуются даже 1.1.1.1/8.8.8.8) — проверка прервана.")
+            self.abort_reason = "nonetwork"
+            if boost:
+                set_process_priority(False)
+            self.running = False
+            return all_results
         # запомнить что было запущено, чтобы восстановить
         had_service = service_status()["zapret"] == "RUNNING"
         if had_service:
@@ -1158,7 +1180,8 @@ class CheckEngine:
         """Обычный последовательный замер каждого конфига."""
         # остановить всё перед тестами
         stop_winws()
-        time.sleep(0.4)
+        time.sleep(0.2)
+        dead_chain = 0
         for idx, bat in enumerate(bat_list):
             if self.cancel_flag.is_set():
                 break
@@ -1187,8 +1210,20 @@ class CheckEngine:
                 log_cb(f"  {bat}: HTTP OK={ok} ERR={fail} PingOK={ping_ok_n} score={score} ({dt:.0f} c)")
             if progress_cb:
                 progress_cb(idx + 1, total, bat, score, all_results[bat])
+            # circuit breaker: три подряд полных глухаря (не пингуется НИЧЕГО) —
+            # это уже не конфиги, а упавшая сеть. Дальше гнать таймауты бессмысленно.
+            if ok == 0 and ping_ok_n == 0 and fail > 0:
+                dead_chain += 1
+                if dead_chain >= 3:
+                    if log_cb:
+                        log_cb("⛔ Три конфига подряд без единого пакета — похоже, сеть упала. Прерываю.")
+                    self.abort_reason = "deadnet"
+                    stop_winws()
+                    break
+            else:
+                dead_chain = 0
             stop_winws()
-            time.sleep(0.3)
+            time.sleep(0.2)
 
     def _ultra_loop(self, bat_list, targets, timeout, ping_thr, repeat,
                     workers, turbo, all_results, progress_cb, log_cb):
@@ -1214,8 +1249,9 @@ class CheckEngine:
             log_cb("Почему не все сразу: конфиги делят один WinDivert — "
                    "параллельный запуск испортил бы замер.")
         stop_winws()
-        time.sleep(0.4)
+        time.sleep(0.2)
         order = list(bat_list)
+        dead_chain = 0
         # --- фаза 1: отсев ---
         for idx, bat in enumerate(order):
             if self.cancel_flag.is_set():
@@ -1244,8 +1280,18 @@ class CheckEngine:
                 log_cb(f"  {bat}: отсев OK={ok} ERR={fail} (~{time.time()-t0:.0f} c)")
             if progress_cb:
                 progress_cb(idx + 1, grand, bat, score, all_results[bat])
+            if ok == 0 and ping_ok_n == 0 and fail > 0:
+                dead_chain += 1
+                if dead_chain >= 3:
+                    if log_cb:
+                        log_cb("⛔ Три конфига подряд без единого пакета — похоже, сеть упала. Прерываю.")
+                    self.abort_reason = "deadnet"
+                    stop_winws()
+                    return
+            else:
+                dead_chain = 0
             stop_winws()
-            time.sleep(0.3)
+            time.sleep(0.2)
         if self.cancel_flag.is_set():
             return
         # --- фаза 2: финал ---
@@ -1281,7 +1327,7 @@ class CheckEngine:
             if progress_cb:
                 progress_cb(total + j + 1, grand, bat, score, all_results[bat])
             stop_winws()
-            time.sleep(0.3)
+            time.sleep(0.2)
 
 
 # ================= UI =================
@@ -1925,6 +1971,26 @@ class ZapretApp:
         self.btn_check_sel.config(state="normal")
         self.btn_check_all.config(state="normal")
         self.btn_cancel.config(state="disabled")
+        if not self.last_results:
+            reason = getattr(self.engine, "abort_reason", "")
+            if reason == "nonetwork":
+                txt, col = "нет сети — проверка прервана", RED
+                tip = "Нет сети: DNS не пингуются. Проверьте интернет."
+            elif reason == "deadnet":
+                txt, col = "сеть упала — проверка прервана", RED
+                tip = "Сеть упала посреди проверки: три конфига подряд без пакетов."
+            else:
+                txt, col = "прервано пользователем", YELLOW
+                tip = "Проверка отменена."
+            self.set_status(txt, col)
+            try:
+                self.prog_lbl.config(text=tip)
+            except Exception:
+                pass
+            run_log_write(f"✔ {tip}")
+            self.msg_q.put(("toast", ("Проверка", tip, col)))
+            self.refresh_active_bar()
+            return
         # лучший — по score (как раньше), показываем — пинги и оценку
         best = None
         best_score = -1
