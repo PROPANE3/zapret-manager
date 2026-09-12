@@ -36,7 +36,7 @@ try:
 except ImportError:
     winreg = None
 
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.7.1"
 APP_NAME = "Zapret Manager"
 APP_REPO = "PROPANE3/zapret-manager"
 
@@ -156,6 +156,67 @@ def _migrate_appearance(cfg):
         cfg["appearance_v2"] = True
         return True
     return False
+
+# ================= ресурсы =================
+# Встроенная иконка (чёрный квадрат, белая Z) — запасной вариант, если нет
+# assets/icon.png (например, запуск из неразвёрнутого архива).
+_ICON_PNG_B64 = (
+    'iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAYAAABccqhmAAALpElEQVR42u3d51NUVx/A8XuEALuu'
+    '\noESyBOYRZoAZHd7IG5OoiIU8/0k0VrDFB8WS/8EUNZaowd6isZHnlTGxN+y9YSwQK5qXuT+MqaC'
+    'w\ne+9yyvfOfDKTiMnM3vP7nnOXyHqeBVd+foFQHSktHagqKoYACelsXcmai8X6eFwpvKLRmJeXF1'
+    'ei\nvHwwoI3i4hL1+9pkUIO8cnP7e4WFA1RZ2SDAKP7aVZFIlCHu7pWT08+LxwtUUVEJYAV/TavMz'
+    'CyG\nu7MrIyPT3+3z1Lvv/gewWiyWzcC/utLT3/Kys/uqt99+B3CK/3ignB38tLR0LxLprfr06Qs4'
+    'zT/9\nuhOCXr3S/ON+lsrK6g3gL/zTsLL8OV8GPwrgNWSTtG7X58YCXSebJbs+wGmAXR/gNGDYt/a'
+    '4cUCw\nETDiNMCRH3D0kYDhBxyNAMMPOBgB3uwDHH5zkBsB9Bx5w51jP8DjAMMPEAGGHyAC/E8+gH'
+    't4xx/g\nOwO84w/wnQGe+wHeD+DoD/AowNEf4FGAoz/AowBHf4BHAXZ/wGa9lfwI/oR+bv/LH1fMi'
+    'wiYHAD5\n/I1uB0B+EwEAzA+AfPhIt94QlC+W30QAADsCIB+/1+UAyBcTAMCeAMhnEcoH8HbpU3rl'
+    'iwkAYFcA\n5NO33xgA+SICANgXAPlo8szMrNcHQL6IAAB2BiAnp1/npwD/FwkAYHEAiopKOg9APF6'
+    'gCABgdwAi\nkWjHAZBfJACA3QHIze2vOnjzrz8BABwIQFnZoH8HoLBwgCIAgBsBiEZjfw+A/EMCAL'
+    'gRgLy8+J+n\nAKkBAQDcCUBx8V++GyA1IACAOwEoLx9MAAAC4F/yNwQAcCsA+fkFBABwOACKAAAuB'
+    '0COAQQAcC8A\nFRVD2gOgCADQserq/6oFCz79AwEALB70xsb/qxcvfu0y/cNAAIBOh37+/E+7NfCv'
+    'I/GQfx8BADQf\nfBnW589/DY0+IXA0AGHeXMCcEBAAoMdVV3+oZwBKSwdaGoAXgFZ65jTwhgDIXwg'
+    'AkBqNjd8TAAIA\nIkAAQtXW9gLQ1t693xMAAgAiQAAIAIgAASAAcNOYMR8SAAIAIkAAAgzAc8AYe/'
+    'c2EgACAJeFcwpw\nNADPnj0HjLJnTyMBIABwWfCnAAIAOHwKIACAw6cAAgAYZd68BQSAAIDHAAKQR'
+    'ADaAGMRgCQ9fdoG\nGCu4xwACABAAAgAQAAIAGGD37r0EgADAZQSAAIAAEIBEPHnSBhiNACQVgGeA'
+    '0QgAAQABIAAEAK7h\nuwAEAA6bO3c+ASAAIAAEgADAOcH9TABHA/D48TPAWPxpQAIAR+3atYcAJB+'
+    'Ap4CRgnv+JwCAcfih\noAQAjgr2+E8AAKOMHl1NAILw6NFTwCg7d+4JYRYIAGCE4Hd/AgAYob5+fk'
+    'izQAAA7YU3C84G4Alg\nhHCO/gQAcHz4CQCgrZ07d6dgFhwNwMOHTwBtfffd7hTNAgEAHB1+AgBop'
+    'b5+XopngQAAWgj/DT8C\nQADg+JGfAPwegMdAj+uZXZ8AWG3UqGq1Y8cu9csvj6EpuT96rBcCYJU5'
+    'c+aq1tZH0JgEWp81QwCs\n2vUZMH1JnPVbOwTAeLNnz1UtLY+gqe3bd2q26xMAS3b9Me2Lq6XlITQ'
+    'lcdZ7HREAg3d9BkxXL3f9\nMQasJQJg3K7/4EErNDZ7dr1Ba4oAGOPbb3eo+/dboSm5P2bs+gTAKC'
+    'NHjlH37rVCY3V19YauLwKg\ntW3bdvgLrAWakvsjgTZ3jREAjXd9BkxndXVzLFhrBEA7W7duV3fvt'
+    'kBTcn/M3vUJgKa7/mh/gT2A\nxuQe2bXuCIAWtmzZru7ceQBNyf2xc+0RgB7f9e/cuQ+N2bfrE4Ae'
+    'V1U1Wm3evM1fYPegKbk/9q9F\nApBys2bNVs3N96AxCbQb65EApHzXb26+C025sesTgJT75JM6dfv'
+    '2XWjMnV2fAKR019+0aRsDpjG5\nP+6uUQIQ6q5/69bP0FhV1SjH1ykBCGHXH6U2btyqbt78GZqaOb'
+    'OOtUoAgjdz5v/8BXYHmtq4cQu7\nPgEI3ogRo9SGDZv9RdYMTUmcWasEIJRd/8aNZmhKwiyBZq0Sg'
+    'MB3fQZMb+z6BCAU69dvVtev34am\n5P6w6xOAUHb9a9duQ2MzZsxisAlA8Nat28SAaUzuD7s+AQhh'
+    '1x+prl69BY1Nn86uTwBC2fU3+gvs\nJjQl90cCzSATgBB2fQZMZww+AQjFmjUb1JUrN6CptWs3MLg'
+    'EIHiVlSPV5cs3oDG5RwwtAQh88GXX\nZ8D0JfeHYSUAgZs2baa6dOk6NMauTwBC2fUbGjYwYBqT+8'
+    'OAEoDATZ3Krs+uD+cCUFlZ5e8q69TF\ni9egqYaG9QwlAQhj15/hL7Cr0JgEmoEkAIEaPrxKffPNO'
+    'nXhwlVoSuLMIBKAwNXWzlDnz1+Bplav\nXtseaIaQAAS+68viYsj0JXFm+AgAuz67PghAMLv+uXOX'
+    'obHa2ukMHAEI3qpVaxkwjcn9YdcnAOz6\njqqpmW49cwNnaABWrVqjzp69BGhBIkAAUrLrj2DBgQC'
+    '4GAB5kc+cuQRohwCEbOXKBv+FvghoqaZm\nGgFg+EEACECgvv66QZ0+fRHQ2pQpBCBww4aN8F/cC4'
+    'D2CADDDwJAAILS1HQBMMaUKVMJQFDkxWxq\nOg8YgwAEePQ/deo8YJTJkwlAIFasWM2CAgFwMQDDh'
+    'lX6L+Y5wDgEIADLl69WJ0+eA4xDAALAQoK5\nAaglAMmYNKnWfyHPAkaS9UsAkrBs2Sp14sRZwEgE'
+    'IEksIhAARwMwdGilOn78DGAsApDk8z+LCATA\n2QDUsIhgeABqCECili5dqY4dOw0Ya+JEApAwFhA'
+    'IgNMBaAKMRgCScPRoE2A0AkAAQAAIQGIBOAUY\nbcKEKQQgUUuWrFBHjpwCjEUAkiAvHosIBMDhAB'
+    'w+fBIwFgEgACAABCBRLCKYbPx4ApCUxYuXq0OH\nTgBGGj9+MgFIhryALCQQAEcD8MEHw1lIIAAu/'
+    '1DQRYuWqYMHjwPGIQABeP/9YSwmEACXPxnoyy+X\nqQMHjgNG+fjjSQQgqFPAgQPHAKMQgEBPAUtZ'
+    'VCAArgZATgE//XQMMAYBCCUCRwEjEIAQfPHFVywu\nGGHcOAIQWgR+/PEooLVx4yYSgHAjcATQFgE'
+    'I2eeff6X27z8CaIkApCQCS1hsIACuBkDIC71//2FA\nK9YGID+/QKsAiPfeG6p++OEwoI2xYwlAyo'
+    '0dO8F/8Q8BPU7WIgGwNASffba4/b8BdEZOpQRAgxAs\nXLhY7dt3KBBm31jAsQD8MwZi376DXbZw4'
+    'SKGHgTAhgB05qOPJvyBQQfeHADPpgAA6EYAYrE+BABw\nMAClpQOVJxcBANwLgDz+EwDA9QAUF5cQ'
+    'AMCxAMjjf/uVlxcnAIBjAfBeXX4APAIAOBoAuQgA4E4A\n5NRPAAB3A/C3+fdyc/sTAMCRAHj/vCK'
+    'RqEcAAPsDUFg44N8BkIsAAPYHwD/tdzj/Xk5OPwIAWB4A\nr7MrMzPLIwCAvQGIxws6D4BcBACwNw'
+    'D+Kf+18+/FYtkeAQDsDIDXlYsAAPYFwN/cuxaASCRKAADL\nAuB15yIAgD0BkE29WwHIyMgkAIAlA'
+    'fASuQgAYH4AZDNPKADp6W/xAgKGB8BL5uIFBMzlb+JJzb/X\nq1caEQAMlJGRldzu/+cbglm8oIBh'
+    'ZPMO7OIFBRw6+vMoADh+9OdRAHD86E8EAIafRwHA1aM/EQAY\nfiIAMPxEAHB++HlTEHDgTb8u/qE'
+    'hTgJAind+LYafxwHAsWM/EQAYfiIAMPy8OQg48WYfbw4Cjr/Z\nl8gjAacBQIM/0stpAGDX1+A00B'
+    'tAB6za9Tu70tLSvUjk5c8rB9A38R/dbfpjQXb2y48tAlzU7U/s\nsfHy6+fl5ua1f3op4IIuf1CnS'
+    '1dmZpaXk9NPFRWVANaJxwuUv74Z9C5+QrF/KuivysoGAcYqLByg\n/HXMQCdzRaMxLy8vroqLS1R5'
+    '+WBAa7JWfQxumFd+foFQoqJiCJBypaUD1as1GIv1MXKOfgOic3rV\nqt0tWgAAAABJRU5ErkJggg='
+    '='
+)
 
 # ================= helpers =================
 
@@ -738,6 +799,31 @@ def available_fonts(whitelist):
     if not found:
         return list(whitelist[:3])
     return found
+
+
+# ---- сброс кэша иконок Windows (проводник мигнёт и перезапустится) ----
+def refresh_icon_cache():
+    """Удаляет IconCache*.db и перезапускает проводник. Возвращает (ok, msg)."""
+    try:
+        if os.name != "nt":
+            return False, "только Windows"
+        cache_dir = os.path.join(os.path.expanduser("~"), "AppData", "Local",
+                                 "Microsoft", "Windows", "Explorer")
+        run_cmd(["taskkill", "/f", "/im", "explorer.exe"], timeout=15)
+        time.sleep(1)
+        removed = 0
+        for pat in ("IconCache.db", "iconcache_*.db"):
+            for fp in glob.glob(os.path.join(cache_dir, pat)):
+                try:
+                    os.remove(fp)
+                    removed += 1
+                except Exception:
+                    pass
+        run_cmd(["explorer.exe"], timeout=10)
+        log_action(f"Сброшен кэш иконок ({removed} файлов), проводник перезапущен")
+        return True, f"Удалено файлов кэша: {removed}. Если иконка не сменилась — перезагрузите ПК."
+    except Exception as e:
+        return False, str(e)
 
 
 # ---- ярлык на рабочем столе в один клик ----
@@ -2433,6 +2519,8 @@ class ZapretApp:
                    command=self.open_data_folder).pack(anchor="w", padx=8, pady=8)
         ttk.Button(inner, text="📌 Создать ярлык на рабочем столе", style="Accent.TButton",
                    command=self.on_make_shortcut).pack(anchor="w", padx=8, pady=(0, 8))
+        ttk.Button(inner, text="🔄 Обновить кэш иконок Windows", style="Ghost.TButton",
+                   command=self.on_refresh_icons).pack(anchor="w", padx=8, pady=(0, 8))
         tk.Label(inner, text=f"{APP_NAME} v{APP_VERSION} • только стандартная библиотека • ~20 МБ RAM\n"
                              "Ручная проверка: турбо (максимум потоков + приоритет).\n"
                              "Автомониторинг: эко (3 потока, фоновый приоритет, сон между проверками).",
@@ -2451,6 +2539,15 @@ class ZapretApp:
         else:
             messagebox.showerror(APP_NAME, f"Не удалось создать ярлык:\n{msg}")
         self.msg_q.put(("actions_refresh", None))
+
+    def on_refresh_icons(self):
+        if not messagebox.askyesno(APP_NAME, "Сбросить кэш иконок Windows?\nПроводник на секунду перезапустится (окна папок закроются)."):
+            return
+        threading.Thread(target=self._refresh_icons_worker, daemon=True).start()
+
+    def _refresh_icons_worker(self):
+        ok, msg = refresh_icon_cache()
+        self.msg_q.put(("toast", ("Кэш иконок", msg, GREEN if ok else RED)))
 
     def browse_root(self):
         d = filedialog.askdirectory(title="Выберите корневую папку zapret (где лежат general*.bat)")
@@ -2809,12 +2906,14 @@ def main():
     _scale = UI_SCALES.get(_cfg0.get("ui_scale", "Крупный"), 1.12)
     root = tk.Tk()
     # иконка: чёрный квадрат с белой Z — окну, приложению и таскбару.
-    # (без глушения: печать причин в консоль, если иконка не встала)
+    # Файлы -> встроенная в код (если запуск без папки assets).
+    _icon_src = "нет"
     try:
         _ico = os.path.join(BASE_DIR, "assets", "icon.ico")
         if os.path.exists(_ico):
             root.iconbitmap(_ico)
             root.iconbitmap(default=_ico)
+            _icon_src = "файл icon.ico"
         else:
             print(f"[icon] нет файла: {_ico}")
     except Exception as e:
@@ -2824,10 +2923,28 @@ def main():
         if os.path.exists(_png):
             root._icon_img = tk.PhotoImage(file=_png)
             root.iconphoto(True, root._icon_img)
+            if _icon_src == "нет":
+                _icon_src = "файл icon.png"
+        elif _ICON_PNG_B64:
+            root._icon_img = tk.PhotoImage(data=_ICON_PNG_B64)
+            root.iconphoto(True, root._icon_img)
+            _icon_src = "встроенная"
         else:
             print(f"[icon] нет файла: {_png}")
     except Exception as e:
         print(f"[icon] iconphoto: {e}")
+        try:
+            if _ICON_PNG_B64:
+                root._icon_img = tk.PhotoImage(data=_ICON_PNG_B64)
+                root.iconphoto(True, root._icon_img)
+                _icon_src = "встроенная (fallback)"
+        except Exception as e2:
+            print(f"[icon] embedded: {e2}")
+    print(f"[icon] источник: {_icon_src}")
+    try:
+        log_action(f"Иконка: {_icon_src}")
+    except Exception:
+        pass
     # системная шторка в цветах темы + рамка в цвет фона (Windows 11 DWM)
     try:
         root.update_idletasks()
