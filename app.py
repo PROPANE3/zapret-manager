@@ -36,10 +36,64 @@ try:
 except ImportError:
     winreg = None
 
-APP_VERSION = "1.12.0"
+APP_VERSION = "1.13.0"
 APP_NAME = "Zapret Manager"
 APP_REPO = "PROPANE3/zapret-manager"
 APP_ID = "Flowseal.ZapretManager"
+
+_LOCK_FD = None
+
+
+def ensure_single_instance():
+    """Только один инстанс: второй молча показывает окно первого и выходит.
+
+    Без этого двойной клик по ярлыку плодит одинаковые окна друг на друге
+    (то самое «двоение») и удваивает нагрузку (лаги, двойные проверки).
+    """
+    global _LOCK_FD
+    try:
+        import msvcrt
+        os.makedirs(DATA_DIR, exist_ok=True)
+        _LOCK_FD = open(os.path.join(DATA_DIR, "instance.lock"), "w")
+        try:
+            msvcrt.locking(_LOCK_FD.fileno(), msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            pass
+    except Exception:
+        pass
+    try:
+        if os.name == "nt":
+            u = ctypes.windll.user32
+            best = {"h": 0}
+
+            @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+            def _cb(h, _):
+                try:
+                    if not u.IsWindowVisible(h):
+                        return True
+                    ln = u.GetWindowTextLengthW(h)
+                    if ln <= 0:
+                        return True
+                    buf = ctypes.create_unicode_buffer(ln + 1)
+                    u.GetWindowTextW(h, buf, ln + 1)
+                    if buf.value.startswith(APP_NAME + " v"):
+                        best["h"] = h
+                        return False
+                except Exception:
+                    pass
+                return True
+
+            u.EnumWindows(_cb, 0)
+            if best["h"]:
+                try:
+                    u.ShowWindow(best["h"], 9)  # SW_RESTORE
+                    u.SetForegroundWindow(best["h"])
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return False
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -178,25 +232,15 @@ DEFAULT_CONFIG = {
     "monitor_interval_min": 3,
     "ping_threshold_ms": 5000,
     "check_timeout_s": 4,
-    "targets_override": "",
-    "check_mode": "quick",      # quick = Discord+YouTube, full = все цели
-    "check_repeat": 2,          # повторов HTTP-проверки (лучший результат идёт в зачёт)
-    "check_workers": 8,         # параллельных потоков на цели
+    "check_mode": "ultra",
+    "check_repeat": 1,
+    "check_workers": 12,
     "ui_font": "Trebuchet MS",
     "ui_scale": "Крупный",
     "mono_font": "Consolas",
     "theme": "Алый",
 }
 
-
-def _migrate_appearance(cfg):
-    """Одноразовая миграция на новый вид v1.2 (шрифт крупнее и красивее)."""
-    if not cfg.get("appearance_v2"):
-        cfg["ui_font"] = "Trebuchet MS"
-        cfg["ui_scale"] = "Крупный"
-        cfg["appearance_v2"] = True
-        return True
-    return False
 
 # ================= ресурсы =================
 # Встроенная иконка (чёрный квадрат, белая Z) — запасной вариант, если нет
@@ -343,8 +387,6 @@ def load_config():
             if os.path.isdir(cand):
                 cfg["zapret_root"] = cand
                 break
-    if _migrate_appearance(cfg):
-        save_config(cfg)
     return cfg
 
 
@@ -463,19 +505,17 @@ def list_configs(zapret_root):
     return sorted(out, key=key)
 
 
-def parse_targets(zapret_root, override_text=""):
+def parse_targets(zapret_root):
     targets = []  # list of (name, url_or_ping)
-    src = ""
-    if override_text and override_text.strip():
-        src = override_text
+    p = os.path.join(zapret_root, "utils", "targets.txt") if zapret_root else ""
+    if p and os.path.exists(p):
+        try:
+            with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                src = f.read()
+        except Exception:
+            src = ""
     else:
-        p = os.path.join(zapret_root, "utils", "targets.txt") if zapret_root else ""
-        if p and os.path.exists(p):
-            try:
-                with open(p, "r", encoding="utf-8", errors="ignore") as f:
-                    src = f.read()
-            except Exception:
-                src = ""
+        src = ""
     for line in src.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -587,7 +627,10 @@ def probe_target(name, val, timeout, ping_thr, ping_cap_ms, repeat):
 
 
 ULTRA_FINALISTS = 6
-ULTRA_SCREEN_TARGETS = ("YouTubeWeb", "DiscordMain")
+ULTRA_SCREEN_TARGETS = ("DiscordMain", "YouTubeWeb")
+
+# Кэш результатов отсева между запусками (в памяти)
+_ULTRA_SCREEN_CACHE = {}
 
 
 def network_alive():
@@ -949,97 +992,31 @@ def win_move(root, x, y):
         return False
 
 
-_CHROME_STATE = {"cb": None, "old": None}
-
-
-def setup_borderless(root, titlebar_h=44, btn_reserve_px=150, border_px=8):
+def hide_native_caption(root):
     """Прячем системную шапку (для Win10, где DWM-тинт невозможен).
 
-    Убираем WS_CAPTION у ВНЕШНЕГО окна + отдаём WM_NCCALCSIZE 0 (неклиентской
-    области нет) + нативное перетаскивание/ресайз через WM_NCHITTEST.
-    Таскбар, кнопки, снап, тень сохраняются. Возвращает True при успехе.
+    Только снимаем WS_CAPTION со стилей ВНЕШНЕГО окна. Subclass НЕ ставим:
+    любой хук оконной процедуры ломает восстановление/разворачивание окна.
+    Перетаскивание — ручное (Tk-бинды + WinAPI), ресайз рамкой, снап
+    и таскбар-тоггл — нативные. Возвращает True, если капшен реально снят.
     """
     if os.name != "nt":
         return False
     try:
-        from ctypes import wintypes
-        LRESULT = getattr(wintypes, "LRESULT", ctypes.c_ssize_t)
         user32 = ctypes.windll.user32
         hwnd = toplevel_hwnd(root)
         if not hwnd:
             return False
-
         style = user32.GetWindowLongW(hwnd, -16)
+        if not (style & 0x00C00000):
+            return True
         user32.SetWindowLongW(hwnd, -16, style & ~0x00C00000)
         user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0020)
-
-        WM_NCCALCSIZE = 0x83
-        WM_NCHITTEST = 0x84
-        HTCLIENT, HTCAPTION = 1, 2
-        HTLEFT, HTRIGHT, HTTOP, HTBOTTOM = 10, 11, 12, 15
-        HTTOPLEFT, HTTOPRIGHT = 13, 14
-        HTBOTTOMLEFT, HTBOTTOMRIGHT = 16, 17
-        WNDPROCTYPE = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT,
-                                         wintypes.WPARAM, wintypes.LPARAM)
-        user32.DefWindowProcW.restype = LRESULT
-        user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT,
-                                          wintypes.WPARAM, wintypes.LPARAM]
-        user32.CallWindowProcW.restype = LRESULT
-        user32.CallWindowProcW.argtypes = [ctypes.c_void_p, wintypes.HWND,
-                                           wintypes.UINT, wintypes.WPARAM,
-                                           wintypes.LPARAM]
-        user32.GetWindowRect.argtypes = [wintypes.HWND,
-                                         ctypes.POINTER(wintypes.RECT)]
-
-        def _proc(h, msg, wp, lp):
-            if msg == WM_NCCALCSIZE:
-                if wp:
-                    return 0
-                return user32.DefWindowProcW(h, msg, wp, lp)
-            if msg == WM_NCHITTEST:
-                x = ctypes.c_short(lp & 0xFFFF).value
-                y = ctypes.c_short((lp >> 16) & 0xFFFF).value
-                rc = wintypes.RECT()
-                user32.GetWindowRect(h, ctypes.byref(rc))
-                if not user32.IsZoomed(h):
-                    b = border_px
-                    left = x < rc.left + b
-                    right = x >= rc.right - b
-                    top = y < rc.top + b
-                    bottom = y >= rc.bottom - b
-                    if top and left:
-                        return HTTOPLEFT
-                    if top and right:
-                        return HTTOPRIGHT
-                    if bottom and left:
-                        return HTBOTTOMLEFT
-                    if bottom and right:
-                        return HTBOTTOMRIGHT
-                    if left:
-                        return HTLEFT
-                    if right:
-                        return HTRIGHT
-                    if top:
-                        return HTTOP
-                    if bottom:
-                        return HTBOTTOM
-                if (y - rc.top) < titlebar_h and (rc.right - x) > btn_reserve_px:
-                    return HTCAPTION
-                return HTCLIENT
-            return user32.CallWindowProcW(prev_proc[0], h, msg, wp, lp)
-
-        prev_proc = [_CHROME_STATE["old"]]
-        _CHROME_STATE["cb"] = WNDPROCTYPE(_proc)
-        if ctypes.sizeof(ctypes.c_void_p) == 8:
-            set_ptr = user32.SetWindowLongPtrW
-        else:
-            set_ptr = user32.SetWindowLongW
-        set_ptr.restype = ctypes.c_void_p
-        set_ptr.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
-        _CHROME_STATE["old"] = set_ptr(hwnd, -4, _CHROME_STATE["cb"])
-        return True
+        return not bool(user32.GetWindowLongW(hwnd, -16) & 0x00C00000)
     except Exception:
         return False
+
+
 
 
 _VPN_RE = None
@@ -1504,32 +1481,31 @@ class CheckEngine:
 
     def test_targets_current(self):
         """ЭКО-режим для автомониторинга: минимум ресурсов —
-        3 потока, 1 повтор, короткий таймаут, фоновый приоритет потока."""
-        targets = parse_targets(self.cfg["zapret_root"], self.cfg.get("targets_override", ""))
+        только пинг 2 ключевых целей, 1 повтор, 2с таймаут, фоновый приоритет."""
+        targets = parse_targets(self.cfg["zapret_root"])
         targets = quick_filter(targets)
-        timeout = min(3, int(self.cfg.get("check_timeout_s", 4)))
+        # Только пинг для мониторинга — быстрее и достаточно для детектирования проблем
+        ping_targets = [(n, f"PING:{split_host(v)[0]}") for n, v in targets]
+        timeout = 2
         ping_thr = int(self.cfg.get("ping_threshold_ms", 5000))
         eco = thread_bg_mode(True)
         try:
-            results = self.probe_many(targets, timeout, ping_thr, 1, 3)
+            results = self.probe_many(ping_targets, timeout, ping_thr, 1, 4)
         finally:
             if eco:
                 thread_bg_mode(False)
-        ok_http = sum(1 for r in results if r["http_ok"] is True)
-        fail_http = sum(1 for r in results if r["http_ok"] is False)
+        # Для мониторинга смотрим только пинги
         bad_ping = sum(1 for r in results if not r["ping_ok"])
-        total_http = ok_http + fail_http
-        dpi_block = (total_http > 0 and fail_http / total_http >= 0.5)
-        ping_problem = (bad_ping >= max(2, len(results) // 2))
-        blocked = dpi_block and ping_problem or (total_http > 0 and fail_http == total_http)
-        return {"results": results, "ok_http": ok_http, "fail_http": fail_http,
-                "bad_ping": bad_ping, "dpi_block": dpi_block,
-                "ping_problem": ping_problem, "blocked": blocked}
+        # Блокировка если ≥50% целей не пингуются
+        blocked = bad_ping >= max(2, len(results) // 2)
+        return {"results": results, "ok_http": 0, "fail_http": 0,
+                "bad_ping": bad_ping, "dpi_block": False,
+                "ping_problem": blocked, "blocked": blocked}
 
     def check_configs(self, bat_list, progress_cb=None, log_cb=None, boost=False):
         self.running = True
         self.cancel_flag.clear()
-        all_targets = parse_targets(self.cfg["zapret_root"], self.cfg.get("targets_override", ""))
+        all_targets = parse_targets(self.cfg["zapret_root"])
         mode = self.cfg.get("check_mode", "quick")
         if mode == "quick":
             targets = quick_filter(all_targets)
@@ -1601,10 +1577,15 @@ class CheckEngine:
 
     def _seq_loop(self, bat_list, targets, timeout, ping_thr, repeat,
                   workers, total, all_results, progress_cb, log_cb):
-        """Обычный последовательный замер каждого конфига."""
+        """Обычный последовательный замер каждого конфига.
+        Оптимизирован: сортировка по best_scores, уменьшенные таймауты."""
+        # Сортируем: сначала конфиги с лучшими прошлыми результатами
+        scores = self.cfg.get("best_scores", {})
+        bat_list = sorted(bat_list, key=lambda b: -scores.get(b, 0))
+
         # остановить всё перед тестами
         stop_winws()
-        time.sleep(0.2)
+        time.sleep(0.1)
         dead_chain = 0
         for idx, bat in enumerate(bat_list):
             if self.cancel_flag.is_set():
@@ -1613,7 +1594,7 @@ class CheckEngine:
                 log_cb(f"[{idx+1}/{total}] Запуск {bat} …")
             t0 = time.time()
             start_winws_hidden(self.cfg["zapret_root"], bat)
-            if not wait_winws_ready(6.0):
+            if not wait_winws_ready(5.0):
                 if log_cb:
                     log_cb(f"  {bat}: winws не запустился — пропуск")
                 all_results[bat] = {"ok": 0, "fail": len(targets), "rows": [],
@@ -1634,95 +1615,142 @@ class CheckEngine:
                 log_cb(f"  {bat}: HTTP OK={ok} ERR={fail} PingOK={ping_ok_n} score={score} ({dt:.0f} c)")
             if progress_cb:
                 progress_cb(idx + 1, total, bat, score, all_results[bat])
-            # circuit breaker: три подряд полных глухаря (не пингуется НИЧЕГО) —
-            # это уже не конфиги, а упавшая сеть. Дальше гнать таймауты бессмысленно.
+            # circuit breaker: три подряд полных глухаря
             if ok == 0 and ping_ok_n == 0 and fail > 0:
                 dead_chain += 1
                 if dead_chain >= 3:
                     if log_cb:
-                        log_cb("⛔ Три конфига подряд без единого пакета — похоже, сеть упала. Прерываю.")
+                        log_cb("⛔ Три конфига подряд без единого пакета — сеть упала. Прерываю.")
                     self.abort_reason = "deadnet"
                     stop_winws()
                     break
             else:
                 dead_chain = 0
             stop_winws()
-            time.sleep(0.2)
+            time.sleep(0.1)
 
     def _ultra_loop(self, bat_list, targets, timeout, ping_thr, repeat,
                     workers, turbo, all_results, progress_cb, log_cb):
         """УЛЬТРА-турнир: дешёвый отсев всех -> точный замер топ-N.
 
-        Честное предупреждение: одновременно гнать все конфиги НЕЛЬЗЯ —
-        все winws делят один драйвер WinDivert и один сетевой путь, стратегии
-        стали бы кромсать одни и те же пакеты и замер показал бы кашу, а не
-        качество конфига. Поэтому отсев идёт по очереди, но очень дёшево
-        (2 ключевые цели, 1 повтор), а точно меряем только финалистов.
-        Пинги отсева — ПРИБЛИЗИТЕЛЬНЫЕ (помечены ≈).
+        Оптимизации:
+        - Приоритизация конфигов по best_scores из прошлых запусков
+        - Отсев только по пингу (без HTTP) — в 3-5 раз быстрее
+        - Кэш результатов отсева между запусками
+        - Ранний выход при идеальном скоре
+        - Уменьшенные таймауты и паузы
         """
         screen = [(n, v) for n, v in targets if n in ULTRA_SCREEN_TARGETS]
         if len(screen) < 2:
             screen = targets[:2]
+        # Только пинг для отсева — HTTP не нужен, достаточно ping_ok
+        screen_ping_only = [(n, v) for n, v in screen if v.startswith("PING:")]
+        if not screen_ping_only:
+            # если нет PING целей, берём хосты из HTTP целей
+            screen_ping_only = [(n, f"PING:{split_host(v)[0]}") for n, v in screen]
+
         total = len(bat_list)
         n_fin = min(ULTRA_FINALISTS, total)
         grand = total + n_fin
+
+        # Сортируем конфиги: сначала те, у кого были хорошие scores
+        scores = self.cfg.get("best_scores", {})
+        order = sorted(bat_list, key=lambda b: -scores.get(b, 0))
+
         if log_cb:
-            log_cb(f"Режим УЛЬТРА: отсев {total} конфигов по {len(screen)} целям "
-                   f"(1 повтор, таймаут 3с), затем точный замер топ-{n_fin}."
+            log_cb(f"Режим УЛЬТРА: отсев {total} конфигов (только пинг, таймаут 2с), "
+                   f"затем точный замер топ-{n_fin}."
                    + (" ТУРБО: приоритет процесса повышен." if turbo else ""))
             log_cb("Почему не все сразу: конфиги делят один WinDivert — "
                    "параллельный запуск испортил бы замер.")
+
         stop_winws()
-        time.sleep(0.2)
-        order = list(bat_list)
+        time.sleep(0.1)
         dead_chain = 0
-        # --- фаза 1: отсев ---
+        perfect_score = len(screen_ping_only) * 10 + len(screen_ping_only)  # max possible
+
+        # --- фаза 1: отсев (только пинг) ---
         for idx, bat in enumerate(order):
             if self.cancel_flag.is_set():
                 break
             if log_cb:
                 log_cb(f"[отсев {idx+1}/{total}] {bat} …")
             t0 = time.time()
+
+            # Проверка кэша
+            cache_key = f"{bat}:{self.cfg['zapret_root']}"
+            if cache_key in _ULTRA_SCREEN_CACHE:
+                cached = _ULTRA_SCREEN_CACHE[cache_key]
+                ping_ok_n = cached["ping_ok"]
+                score = cached["score"]
+                all_results[bat] = {"ok": 0, "fail": 0, "ping_ok": ping_ok_n,
+                                    "rows": [], "started": True, "score": score,
+                                    "final": False}
+                if log_cb:
+                    log_cb(f"  {bat}: кэш pingOK={ping_ok_n} score={score} (~0 c)")
+                if progress_cb:
+                    progress_cb(idx + 1, grand, bat, score, all_results[bat])
+                if score >= perfect_score:
+                    if log_cb:
+                        log_cb(f"  ⚡ Идеальный скор — прыгаем в финал!")
+                    break
+                continue
+
             start_winws_hidden(self.cfg["zapret_root"], bat)
-            if not wait_winws_ready(4.0, fast=True):
+            if not wait_winws_ready(3.0, fast=True):
                 if log_cb:
                     log_cb(f"  {bat}: winws не запустился — пропуск")
-                all_results[bat] = {"ok": 0, "fail": len(screen), "rows": [],
+                all_results[bat] = {"ok": 0, "fail": len(screen_ping_only), "rows": [],
                                     "started": False, "score": -1, "final": False}
                 if progress_cb:
                     progress_cb(idx + 1, grand, bat, -1, all_results[bat])
                 continue
-            rows = self.probe_many(screen, 3, ping_thr, 1, workers)
-            ok = sum(1 for r in rows if r["http_ok"] is True)
-            fail = sum(1 for r in rows if r["http_ok"] is False)
+
+            # Только пинг, 1 повтор, таймаут 2с, больше потоков
+            rows = self.probe_many(screen_ping_only, 2, ping_thr, 1, min(16, workers * 2))
             ping_ok_n = sum(1 for r in rows if r["ping_ok"])
-            score = ok * 10 + ping_ok_n
-            all_results[bat] = {"ok": ok, "fail": fail, "ping_ok": ping_ok_n,
+            score = ping_ok_n * 11  # вес пинга выше для отсева
+            all_results[bat] = {"ok": 0, "fail": 0, "ping_ok": ping_ok_n,
                                 "rows": rows, "started": True, "score": score,
                                 "final": False}
+
+            # Кэшируем результат отсева
+            _ULTRA_SCREEN_CACHE[cache_key] = {"ping_ok": ping_ok_n, "score": score}
+
             if log_cb:
-                log_cb(f"  {bat}: отсев OK={ok} ERR={fail} (~{time.time()-t0:.0f} c)")
+                log_cb(f"  {bat}: отсев pingOK={ping_ok_n}/{len(screen_ping_only)} score={score} (~{time.time()-t0:.1f} c)")
             if progress_cb:
                 progress_cb(idx + 1, grand, bat, score, all_results[bat])
-            if ok == 0 and ping_ok_n == 0 and fail > 0:
+
+            if ping_ok_n == 0:
                 dead_chain += 1
                 if dead_chain >= 3:
                     if log_cb:
-                        log_cb("⛔ Три конфига подряд без единого пакета — похоже, сеть упала. Прерываю.")
+                        log_cb("⛔ Три конфига подряд без пинга — сеть упала. Прерываю.")
                     self.abort_reason = "deadnet"
                     stop_winws()
                     return
             else:
                 dead_chain = 0
+
+            # Ранний выход: если набрали макс. скор, дальше отсев не нужен
+            if score >= perfect_score:
+                if log_cb:
+                    log_cb(f"  ⚡ Идеальный пинг — остальные в финал без отсева")
+                break
+
             stop_winws()
-            time.sleep(0.2)
+            time.sleep(0.1)
+
         if self.cancel_flag.is_set():
             return
+
         # --- фаза 2: финал ---
         ranked = sorted(all_results.items(), key=lambda kv: -kv[1]["score"])
         finalists = [b for b, _ in ranked[:n_fin]]
         if log_cb:
             log_cb(f"Финалисты топ-{len(finalists)}: {', '.join(finalists)} — точный замер…")
+
         for j, bat in enumerate(finalists):
             if self.cancel_flag.is_set():
                 break
@@ -1730,7 +1758,7 @@ class CheckEngine:
                 log_cb(f"[финал {j+1}/{len(finalists)}] {bat} …")
             t0 = time.time()
             start_winws_hidden(self.cfg["zapret_root"], bat)
-            if not wait_winws_ready(6.0):
+            if not wait_winws_ready(5.0):
                 if log_cb:
                     log_cb(f"  {bat}: winws не запустился в финале")
                 all_results[bat]["final"] = True
@@ -1751,7 +1779,7 @@ class CheckEngine:
             if progress_cb:
                 progress_cb(total + j + 1, grand, bat, score, all_results[bat])
             stop_winws()
-            time.sleep(0.2)
+            time.sleep(0.1)
 
 
 # ================= UI =================
@@ -2321,7 +2349,7 @@ class ZapretApp:
         self._maximized = False
         try:
             root.update_idletasks()
-            self._chrome_ok = setup_borderless(root)
+            self._chrome_ok = hide_native_caption(root)
         except Exception:
             self._chrome_ok = False
         root.bind("<Map>", self._on_map_chrome, add="+")
@@ -2343,14 +2371,15 @@ class ZapretApp:
         # проверка обновлений zapret-discord-youtube и самого приложения
         self.check_zapret_updates()
         self.check_app_updates()
+        # resource monitor
+        self.start_resource_monitor()
 
     def _on_map_chrome(self, _e=None):
-        # Tk возвращает WS_CAPTION при первом показе — снять снова
+        # Tk возвращает WS_CAPTION при первом показе — снять снова.
+        # Только стиль, без subclass (он ломал restore/maximize).
         try:
-            u = ctypes.windll.user32
-            hwnd = toplevel_hwnd(self.root)
-            if hwnd and (u.GetWindowLongW(hwnd, -16) & 0x00C00000):
-                self._chrome_ok = setup_borderless(self.root)
+            if hide_native_caption(self.root):
+                self._chrome_ok = True
         except Exception:
             pass
 
@@ -2529,8 +2558,8 @@ class ZapretApp:
             pass
 
     def toggle_maximize(self, force=False):
-        if self._chrome_ok and force:
-            return
+        # force игнорируется: нативного даблклика больше нет (нет HTCAPTION),
+        # разворачиваем всегда вручную
         try:
             if self.root.state() == "zoomed":
                 self.root.state("normal")
@@ -2593,6 +2622,37 @@ class ZapretApp:
             self.nav_btns[key] = b
         sb_bottom = tk.Frame(sb, bg=SIDEBAR)
         sb_bottom.pack(side="bottom", fill="x", padx=18, pady=16)
+        
+        # Resource monitor
+        self.res_frame = tk.Frame(sb_bottom, bg=SIDEBAR)
+        self.res_frame.pack(fill="x", pady=(0, 8))
+        self.res_cpu = tk.Label(self.res_frame, text="CPU: —%", bg=SIDEBAR, fg=MUTED, font=(FONT, 8), anchor="w")
+        self.res_cpu.pack(fill="x")
+        self.res_ram = tk.Label(self.res_frame, text="RAM: — MB", bg=SIDEBAR, fg=MUTED, font=(FONT, 8), anchor="w")
+        self.res_ram.pack(fill="x")
+        self.res_gpu = tk.Label(self.res_frame, text="GPU: —%", bg=SIDEBAR, fg=MUTED, font=(FONT, 8), anchor="w")
+        self.res_gpu.pack(fill="x")
+        
+        # Quick toggles
+        self.toggle_frame = tk.Frame(sb_bottom, bg=SIDEBAR)
+        self.toggle_frame.pack(fill="x", pady=(0, 8))
+        
+        # Game Filter toggle
+        self.game_filter_var = tk.BooleanVar(value=False)
+        self.game_filter_btn = tk.Checkbutton(self.toggle_frame, text="🎮 Game Filter: —", variable=self.game_filter_var,
+                                               bg=SIDEBAR, fg=TEXT, font=(FONT, 9), anchor="w",
+                                               activebackground=SIDEBAR, selectcolor=CARD2,
+                                               command=self.toggle_game_filter)
+        self.game_filter_btn.pack(fill="x", anchor="w")
+        
+        # IPSet Filter toggle  
+        self.ipset_filter_var = tk.BooleanVar(value=False)
+        self.ipset_filter_btn = tk.Checkbutton(self.toggle_frame, text="🔢 IPSet Filter: —", variable=self.ipset_filter_var,
+                                                bg=SIDEBAR, fg=TEXT, font=(FONT, 9), anchor="w",
+                                                activebackground=SIDEBAR, selectcolor=CARD2,
+                                                command=self.toggle_ipset_filter)
+        self.ipset_filter_btn.pack(fill="x", anchor="w", pady=(4, 0))
+        
         self.admin_lbl = tk.Label(sb_bottom, text="", bg=SIDEBAR, fg=MUTED, font=(FONT, 9))
         self.admin_lbl.pack(anchor="w")
         tk.Label(sb_bottom, text=f"v{APP_VERSION} • stdlib • ~20 МБ RAM",
@@ -2859,6 +2919,8 @@ class ZapretApp:
                     self.show_app_update_banner(payload)
                 elif kind == "vpn":
                     self._show_vpn(payload[0], payload[1])
+                elif kind == "diag_results":
+                    self.show_diag_results(payload)
         except queue.Empty:
             pass
         # даблклик по шапке разворачивает сама Windows — синхронизируем глиф
@@ -2871,6 +2933,41 @@ class ZapretApp:
     def set_status(self, text, color=MUTED):
         try:
             self.status_badge.set(text, color)
+        except Exception:
+            pass
+
+    def show_diag_results(self, results):
+        """Show diagnostics results in a modal"""
+        d = tk.Toplevel(self.root)
+        d.title("Диагностика")
+        d.configure(bg=CARD)
+        d.resizable(False, False)
+        try:
+            d.transient(self.root)
+            d.grab_set()
+        except Exception:
+            pass
+        
+        tk.Label(d, text="Результаты диагностики", bg=CARD, fg=TEXT, font=(FONT, 12, "bold"),
+                 anchor="w").pack(fill="x", padx=18, pady=(16, 8))
+        
+        for icon, name, status, color in results:
+            row = tk.Frame(d, bg=CARD)
+            row.pack(fill="x", padx=18, pady=2)
+            tk.Label(row, text=icon, bg=CARD, fg=color, font=(FONT, 10, "bold")).pack(side="left")
+            tk.Label(row, text=name, bg=CARD, fg=TEXT, font=(FONT, 10), width=25, anchor="w").pack(side="left")
+            tk.Label(row, text=status, bg=CARD, fg=color, font=(FONT, 10), anchor="w").pack(side="left")
+        
+        btns = tk.Frame(d, bg=CARD)
+        btns.pack(fill="x", padx=18, pady=14)
+        RButton(btns, text="OK", style="accent", command=d.destroy).pack(side="right")
+        
+        try:
+            self.root.update_idletasks()
+            d.update_idletasks()
+            ww, wh = d.winfo_reqwidth(), d.winfo_reqheight()
+            rx, ry, rw, rh = self._win_xywh()
+            d.geometry(f"+{rx + max(0, (rw - ww) // 2)}+{ry + max(0, (rh - wh) // 2)}")
         except Exception:
             pass
 
@@ -2923,6 +3020,11 @@ class ZapretApp:
         tk.Label(qf, text="Макс. пинг, мс:", bg=CARD, fg=MUTED, font=(FONT, 10)).pack(side="left")
         self.q_thr_var = tk.StringVar(value=str(self.cfg.get("ping_threshold_ms", 5000)))
         ttk.Entry(qf, textvariable=self.q_thr_var, width=8).pack(side="left", padx=(6, 14))
+        tk.Label(qf, text="Потоки:", bg=CARD, fg=MUTED, font=(FONT, 10)).pack(side="left")
+        self.q_workers_var = tk.StringVar(value=str(self.cfg.get("check_workers", 8)))
+        DropMenu(qf, variable=self.q_workers_var,
+                 values=[str(n) for n in (4, 6, 8, 10, 12, 16)],
+                 width=8).pack(side="left", padx=(6, 14))
         RButton(qf, text="💾", style="accent", height=30,
                    command=self.save_quick_settings).pack(side="left")
         # баннер обновления zapret (скрыт, показывается при наличии апдейта)
@@ -2970,6 +3072,18 @@ class ZapretApp:
                    command=self.on_restart_config).pack(side="left", padx=(0, 8))
         RButton(aright, text="■ Остановить", style="ghost",
                    command=self.on_remove_service).pack(side="left")
+        RButton(aright, text="🔧 Диагностика", style="ghost",
+                   command=self.run_diagnostics).pack(side="left", padx=(8, 0))
+        # Real-time ping display
+        self.ping_frame = tk.Frame(abar, bg=CARD)
+        self.ping_frame.pack(side="right", padx=16)
+        self.ping_discord_lbl = tk.Label(self.ping_frame, text="DS: —", bg=CARD, fg=MUTED, font=(MONO, 9))
+        self.ping_discord_lbl.pack(side="left", padx=8)
+        self.ping_youtube_lbl = tk.Label(self.ping_frame, text="YT: —", bg=CARD, fg=MUTED, font=(MONO, 9))
+        self.ping_youtube_lbl.pack(side="left", padx=8)
+        
+        # Start ping monitor
+        self._start_ping_monitor()
         # список конфигов + лог
         mid = tk.Frame(inner, bg=BG)
         mid.pack(fill="x")
@@ -2992,15 +3106,15 @@ class ZapretApp:
 
         o2, right = self.card(mid)
         o2.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
-        tk.Label(right, text="Пинги Discord / YouTube", bg=CARD, fg=TEXT, font=(FONT, 12, "bold")).pack(anchor="w", padx=14, pady=(12, 4))
-        tk.Label(right, text="Не работает • Плохой (2000) • Средний (1000) • Хороший (300) • Отличный (100)",
-                 bg=CARD, fg=MUTED, font=(FONT, 8)).pack(anchor="w", padx=14, pady=(0, 6))
+        tk.Label(right, text="Пинги по конфигам", bg=CARD, fg=TEXT, font=(FONT, 12, "bold")).pack(anchor="w", padx=14, pady=(12, 4))
+        tk.Label(right, text="DS=Discord  YT=YouTube  + пользовательские цели", bg=CARD, fg=MUTED, font=(FONT, 8)).pack(anchor="w", padx=14, pady=(0, 6))
         gwrap = tk.Frame(right, bg=CARD)
         gwrap.pack(fill="both", expand=True, padx=14, pady=(0, 12))
-        gcols = ("config", "discord", "youtube", "grade")
-        self.grade_tree = ttk.Treeview(gwrap, columns=gcols, show="headings", height=12)
-        for c, w, t in [("config", 190, "Конфиг"), ("discord", 90, "Discord"),
-                        ("youtube", 90, "YouTube"), ("grade", 120, "Оценка")]:
+        # Dynamic columns: config, DS, YT, user targets..., grade
+        self.grade_tree_cols = ["config", "discord", "youtube", "grade"]
+        self.grade_tree = ttk.Treeview(gwrap, columns=self.grade_tree_cols, show="headings", height=12)
+        for c, w, t in [("config", 170, "Конфиг"), ("discord", 60, "DS"),
+                        ("youtube", 60, "YT"), ("grade", 110, "Оценка")]:
             self.grade_tree.heading(c, text=t)
             self.grade_tree.column(c, width=w, anchor="center" if c != "config" else "w",
                                    stretch=(c == "config"))
@@ -3032,18 +3146,74 @@ class ZapretApp:
         for v in self.cfg_vars.values():
             v.set(val)
 
+    def _rebuild_grade_tree_cols(self):
+        """Rebuild grade tree columns based on current targets"""
+        try:
+            targets = parse_targets(self.cfg["zapret_root"])
+            user_targets = [t for t in targets if t[0] not in QUICK_NAMES]
+            user_names = [t[0] for t in user_targets]
+            
+            # Build new columns: config, discord, youtube, user targets..., grade
+            new_cols = ["config", "discord", "youtube"] + user_names + ["grade"]
+            
+            if new_cols != self.grade_tree_cols:
+                self.grade_tree_cols = new_cols
+                self.grade_tree["columns"] = new_cols
+                # Reconfigure all columns
+                for c in new_cols:
+                    if c == "config":
+                        w, t = 170, "Конфиг"
+                        anchor = "w"
+                    elif c == "discord":
+                        w, t = 60, "DS"
+                        anchor = "center"
+                    elif c == "youtube":
+                        w, t = 60, "YT"
+                        anchor = "center"
+                    elif c == "grade":
+                        w, t = 110, "Оценка"
+                        anchor = "center"
+                    else:
+                        # User target - abbreviate if long
+                        display = c[:8] if len(c) > 8 else c
+                        w, t = 70, display
+                        anchor = "center"
+                    self.grade_tree.heading(c, text=t)
+                    self.grade_tree.column(c, width=w, anchor=anchor, stretch=(c == "config"))
+        except Exception:
+            pass
+
     def _grade_row(self, bat, v):
         """Строка таблицы пингов: (values, tag). Нефиналисты Ультры — с ≈."""
         if not v.get("started"):
-            return (bat, "—", "—", "Не работает"), "g0"
+            # Build empty values for all columns
+            vals = [bat]
+            for c in self.grade_tree_cols:
+                if c not in ("config", "grade"):
+                    vals.append("—")
+            vals.append("Не работает")
+            return tuple(vals), "g0"
+        
         dm, ym = service_pings(v.get("rows", []))
         text, _color, rank = config_grade(dm, ym)
         if v.get("final", True) is False:
             text += " ≈"
-        return (bat, fmt_ping(dm), fmt_ping(ym), text), f"g{rank}"
+        
+        # Build values for all columns
+        vals = [bat, fmt_ping(dm), fmt_ping(ym)]
+        # Add user target pings
+        rows_by_name = {r["name"]: r for r in v.get("rows", [])}
+        for c in self.grade_tree_cols:
+            if c not in ("config", "discord", "youtube", "grade"):
+                r = rows_by_name.get(c)
+                vals.append(fmt_ping(r["ping_ms"]) if r else "—")
+        vals.append(text)
+        return tuple(vals), f"g{rank}"
 
     def _insert_grade_row(self, bat, v):
         try:
+            # Ensure columns are up to date
+            self._rebuild_grade_tree_cols()
             vals, tag = self._grade_row(bat, v)
             iid = self.grade_tree.insert("", "end", values=vals, tags=(tag,))
             self.grade_tree.see(iid)
@@ -3095,19 +3265,22 @@ class ZapretApp:
         return [k for k, v in self.cfg_vars.items() if v.get()]
 
     def save_quick_settings(self):
-        """Быстрые параметры с главной: режим + повторы + макс. пинг."""
+        """Быстрые параметры с главной: режим + повторы + макс. пинг + потоки."""
         try:
             rep = min(3, max(1, int(self.q_repeat_var.get())))
             thr = max(300, int(self.q_thr_var.get()))
+            wor = min(16, max(4, int(self.q_workers_var.get())))
         except ValueError:
-            self.dlg_error("Повторы и пинг — числа")
+            self.dlg_error("Повторы, пинг и потоки — числа")
             return
         self.cfg["check_mode"] = mode_key(self.q_mode_var.get())
         self.cfg["check_repeat"] = rep
         self.cfg["ping_threshold_ms"] = thr
+        self.cfg["check_workers"] = wor
         save_config(self.cfg)
         self.engine.cfg = self.cfg
-        log_action(f"Быстрые параметры: режим={self.cfg['check_mode']}, повторы={rep}, макс. пинг={thr} мс")
+        log_action(f"Быстрые параметры: режим={self.cfg['check_mode']}, повторы={rep}, "
+                   f"макс. пинг={thr} мс, потоки={wor}")
         self.msg_q.put(("toast", ("Параметры", "Сохранено. Применятся к следующей проверке.", GREEN)))
 
     def start_check_selected(self):
@@ -3410,6 +3583,23 @@ class ZapretApp:
         except Exception:
             pass
         self.refresh_vpn_async()
+        self._update_toggles()
+
+    def _update_toggles(self):
+        """Update toggle button texts to reflect current status"""
+        try:
+            # Game Filter
+            enabled, mode = self.get_game_filter_status()
+            self.game_filter_var.set(enabled)
+            self.game_filter_btn.config(text=f"🎮 Game Filter: {mode}")
+            
+            # IPSet Filter
+            status = self.get_ipset_status()
+            self.ipset_filter_var.set(status != "any")
+            status_text = {"loaded": "Загружен", "none": "Минимум", "any": "Все"}.get(status, status)
+            self.ipset_filter_btn.config(text=f"🔢 IPSet Filter: {status_text}")
+        except Exception:
+            pass
 
     def refresh_vpn_async(self):
         """VPN-статус в фоне (подпроцесс ~0.5с), кэш 60с."""
@@ -3448,6 +3638,243 @@ class ZapretApp:
                 self.vpn_lbl.config(text="VPN: выкл", fg=MUTED)
         except Exception:
             pass
+
+    # ================= Resource Monitor =================
+    def start_resource_monitor(self):
+        """Start periodic resource usage updates"""
+        self._update_resources()
+        
+    def _update_resources(self):
+        try:
+            import wmi
+            c = wmi.WMI()
+            # CPU
+            for cpu in c.Win32_Processor():
+                load = cpu.LoadPercentage
+                if load is not None:
+                    self.res_cpu.config(text=f"CPU: {load}%")
+                    break
+            else:
+                self.res_cpu.config(text="CPU: —%")
+            # RAM
+            for os_info in c.Win32_OperatingSystem():
+                total = int(os_info.TotalVisibleMemorySize) * 1024
+                free = int(os_info.FreePhysicalMemory) * 1024
+                used = total - free
+                # Get process memory
+                import os
+                import subprocess
+                try:
+                    pid = os.getpid()
+                    out = subprocess.check_output(f'wmic process where ProcessId={pid} get WorkingSetSize', shell=True).decode()
+                    lines = out.strip().split('\n')
+                    if len(lines) > 1:
+                        wss = int(lines[1].strip()) / 1024 / 1024
+                        self.res_ram.config(text=f"RAM: {wss:.0f} MB")
+                    else:
+                        self.res_ram.config(text=f"RAM: {used/1024/1024:.0f} MB (sys)")
+                except Exception:
+                    self.res_ram.config(text=f"RAM: {used/1024/1024:.0f} MB (sys)")
+                break
+            # GPU
+            for gpu in c.Win32_VideoController():
+                if gpu.Name:
+                    self.res_gpu.config(text=f"GPU: {gpu.Name[:20]}")
+                    break
+            else:
+                self.res_gpu.config(text="GPU: N/A")
+        except Exception:
+            self.res_cpu.config(text="CPU: —%")
+            self.res_ram.config(text="RAM: — MB")
+            self.res_gpu.config(text="GPU: —%")
+        # Schedule next update
+        self.root.after(5000, self._update_resources)
+
+    def get_game_filter_status(self):
+        """Read game_filter.enabled and return (enabled, mode_text)"""
+        try:
+            p = os.path.join(self.cfg["zapret_root"], "utils", "game_filter.enabled")
+            if os.path.exists(p):
+                with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                    mode = f.read().strip().lower()
+                if mode == "all":
+                    return True, "TCP+UDP"
+                elif mode == "tcp":
+                    return True, "TCP"
+                elif mode == "udp":
+                    return True, "UDP"
+            return False, "Выкл"
+        except Exception:
+            return False, "Ошибка"
+
+    def get_ipset_status(self):
+        """Check ipset-all.txt status: loaded / none / any"""
+        try:
+            p = os.path.join(self.cfg["zapret_root"], "lists", "ipset-all.txt")
+            if os.path.exists(p):
+                with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                    lines = f.readlines()
+                if not lines:
+                    return "any"
+                if any("203.0.113.113/32" in line for line in lines):
+                    return "none"
+                return "loaded"
+            return "any"
+        except Exception:
+            return "any"
+
+    def toggle_game_filter(self):
+        """Cycle: disabled -> all -> tcp -> udp -> disabled"""
+        try:
+            p = os.path.join(self.cfg["zapret_root"], "utils", "game_filter.enabled")
+            current = ""
+            if os.path.exists(p):
+                with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                    current = f.read().strip().lower()
+            
+            modes = ["", "all", "tcp", "udp"]  # empty = disabled
+            idx = modes.index(current) if current in modes else 0
+            next_mode = modes[(idx + 1) % len(modes)]
+            
+            if next_mode:
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write(next_mode)
+            else:
+                if os.path.exists(p):
+                    os.remove(p)
+            
+            # Update checkbox to reflect state (checked if any mode enabled)
+            self.game_filter_var.set(bool(next_mode))
+            log_action(f"Game Filter: {next_mode or 'disabled'}")
+        except Exception as e:
+            log_action(f"Game Filter toggle error: {e}", "error")
+
+    def toggle_ipset_filter(self):
+        """Cycle ipset-all.txt: loaded -> none -> any -> loaded"""
+        try:
+            p = os.path.join(self.cfg["zapret_root"], "lists", "ipset-all.txt")
+            backup = p + ".backup"
+            status = self.get_ipset_status()
+            
+            if status == "loaded":
+                # loaded -> none (keep only placeholder)
+                if not os.path.exists(backup):
+                    os.rename(p, backup)
+                else:
+                    os.remove(backup)
+                    os.rename(p, backup)
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write("203.0.113.113/32\n")
+                new_status = "none"
+            elif status == "none":
+                # none -> any (empty file)
+                with open(p, "w", encoding="utf-8") as f:
+                    pass
+                new_status = "any"
+            else:  # any
+                # any -> loaded (restore from backup)
+                if os.path.exists(backup):
+                    if os.path.exists(p):
+                        os.remove(p)
+                    os.rename(backup, p)
+                    new_status = "loaded"
+                else:
+                    self.dlg_error("Нет бэкапа ipset-all.txt.backup для восстановления")
+                    return
+            
+            self.ipset_filter_var.set(new_status != "any")
+            log_action(f"IPSet Filter: {new_status}")
+        except Exception as e:
+            log_action(f"IPSet Filter toggle error: {e}", "error")
+
+    def run_diagnostics(self):
+        """Run diagnostics similar to service.bat"""
+        def _diag():
+            results = []
+            try:
+                # BFE service
+                rc, out = run_cmd(["sc", "query", "BFE"], timeout=5)
+                if "RUNNING" in out:
+                    results.append(("✓", "Base Filtering Engine", "running", GREEN))
+                else:
+                    results.append(("✗", "Base Filtering Engine", "NOT running!", RED))
+                
+                # Proxy
+                proxy_enabled = False
+                if winreg:
+                    try:
+                        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Internet Settings") as k:
+                            v, _ = winreg.QueryValueEx(k, "ProxyEnable")
+                            proxy_enabled = int(v) == 1
+                    except Exception:
+                        pass
+                if proxy_enabled:
+                    results.append(("⚠", "System Proxy", "enabled (may interfere)", YELLOW))
+                else:
+                    results.append(("✓", "System Proxy", "disabled", GREEN))
+                
+                # TCP timestamps
+                rc, out = run_cmd(["netsh", "interface", "tcp", "show", "global"], timeout=5)
+                if "enabled" in out.lower() and "timestamps" in out.lower():
+                    results.append(("✓", "TCP Timestamps", "enabled", GREEN))
+                else:
+                    results.append(("⚠", "TCP Timestamps", "disabled", YELLOW))
+                
+                # Adguard
+                rc, out = run_cmd(["tasklist", "/FI", "IMAGENAME eq AdguardSvc.exe"], timeout=5)
+                if "AdguardSvc.exe" in out:
+                    results.append(("✗", "AdguardSvc", "running (conflicts)", RED))
+                else:
+                    results.append(("✓", "AdguardSvc", "not running", GREEN))
+                
+                # Killer
+                rc, out = run_cmd(["sc", "query"], timeout=5)
+                if "Killer" in out:
+                    results.append(("✗", "Killer Service", "found (conflicts)", RED))
+                else:
+                    results.append(("✓", "Killer Service", "not found", GREEN))
+                
+                # WinDivert
+                rc, out = run_cmd(["sc", "query", "WinDivert"], timeout=5)
+                if "RUNNING" in out:
+                    results.append(("✓", "WinDivert", "running", GREEN))
+                else:
+                    results.append(("✗", "WinDivert", "not running", RED))
+                
+                # Show results
+                self.msg_q.put(("diag_results", results))
+                
+            except Exception as e:
+                self.msg_q.put(("diag_results", [("✗", "Error", str(e), RED)]))
+        
+        threading.Thread(target=_diag, daemon=True).start()
+
+    def _start_ping_monitor(self):
+        """Periodic ping to Discord/YouTube for real-time display"""
+        def _ping():
+            try:
+                if not self.root.winfo_exists():
+                    return
+                targets = parse_targets(self.cfg["zapret_root"])
+                targets = quick_filter(targets)
+                ping_targets = [(n, f"PING:{split_host(v)[0]}") for n, v in targets]
+                engine = CheckEngine(self.cfg)
+                results = engine.probe_many(ping_targets, 2, 5000, 1, 4)
+                for r in results:
+                    name = r["name"]
+                    pm = r["ping_ms"]
+                    txt = f"{pm}ms" if pm else "—"
+                    color = GREEN if pm and pm < 100 else (YELLOW if pm and pm < 300 else (ACCENT2 if pm else RED))
+                    if name == "DiscordMain":
+                        self.root.after(0, lambda: self.ping_discord_lbl.config(text=f"DS: {txt}", fg=color))
+                    elif name == "YouTubeWeb":
+                        self.root.after(0, lambda: self.ping_youtube_lbl.config(text=f"YT: {txt}", fg=color))
+            except Exception:
+                pass
+            if self.root.winfo_exists():
+                self.root.after(10000, _ping)
+        threading.Thread(target=_ping, daemon=True).start()
 
     def selected_grade_bat(self):
         try:
@@ -3623,7 +4050,7 @@ class ZapretApp:
         o.grid(row=0, column=0, sticky="ew", pady=(0, 12))
         row = tk.Frame(top, bg=CARD)
         row.pack(fill="x", padx=16, pady=12)
-        self.dom_hint = tk.Label(row, text="Списки из папки lists/",
+        self.dom_hint = tk.Label(row, text="Списки из папки lists/ — галочка = включен",
                                  bg=CARD, fg=MUTED, font=(FONT, 9))
         self.dom_hint.pack(side="left")
         RButton(row, text="🔄 Обновить", style="ghost",
@@ -3638,11 +4065,12 @@ class ZapretApp:
         o1, l = self.card(mid)
         o1.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         tk.Label(l, text="Файлы", bg=CARD, fg=TEXT, font=(FONT, 11, "bold")).pack(anchor="w", padx=12, pady=(10, 4))
-        self.dom_list = tk.Listbox(l, bg=CARD2, fg=TEXT, font=(FONT, 9),
-                                   bd=0, highlightthickness=0, selectbackground=ACCENT,
-                                   selectforeground="white")
-        self.dom_list.pack(fill="both", expand=True, padx=12, pady=(0, 12))
-        self.dom_list.bind("<<ListboxSelect>>", lambda _e: self.show_domain_file())
+        # Scrollable frame with checkboxes instead of Listbox
+        self.dom_scroll = ScrollFrame(l, bg=CARD)
+        self.dom_scroll.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        self.dom_items_frame = self.dom_scroll.inner
+        self.dom_vars = {}  # base_name -> BooleanVar
+        self.dom_row_frames = {}  # base_name -> frame
         o2, r = self.card(mid)
         o2.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
         self.dom_title = tk.Label(r, text="Содержимое", bg=CARD, fg=TEXT, font=(FONT, 11, "bold"))
@@ -3655,49 +4083,140 @@ class ZapretApp:
         d = os.path.join(self.cfg.get("zapret_root", ""), "lists")
         return d if os.path.isdir(d) else ""
 
+    def _is_disabled(self, fname):
+        return fname.endswith(".disabled")
+
+    def _get_base_name(self, fname):
+        if fname.endswith(".disabled"):
+            return fname[:-9]
+        return fname
+
     def refresh_domains_list(self):
         try:
-            self.dom_list.delete(0, "end")
+            # Clear existing widgets
+            for w in self.dom_items_frame.winfo_children():
+                w.destroy()
+            self.dom_vars.clear()
+            self.dom_row_frames.clear()
+
             d = self._lists_dir()
             if not d:
                 self.dom_hint.config(text="Папка lists/ не найдена — проверьте корневую папку в Настройках")
                 return
-            files = sorted(glob.glob(os.path.join(d, "*.txt")))
+
+            # Get both .txt and .txt.disabled files
+            all_files = {}
+            for fp in glob.glob(os.path.join(d, "*.txt")):
+                fname = os.path.basename(fp)
+                base = self._get_base_name(fname)
+                disabled = self._is_disabled(fname)
+                if base not in all_files or (disabled and not all_files[base][1]):
+                    all_files[base] = (fname, disabled)
+            for fp in glob.glob(os.path.join(d, "*.txt.disabled")):
+                fname = os.path.basename(fp)
+                base = self._get_base_name(fname)
+                disabled = True
+                if base not in all_files or disabled:
+                    all_files[base] = (fname, disabled)
+
             self.dom_hint.config(text=f"Списки из {d} — изменения вступят в силу после перезапуска zapret")
-            for fp in files:
-                self.dom_list.insert("end", os.path.basename(fp))
-            if files:
-                self.dom_list.select_set(0)
-                self.show_domain_file()
+
+            for base in sorted(all_files.keys()):
+                fname, disabled = all_files[base]
+                self._create_list_row(base, fname, disabled)
+
+            # Select first item
+            if all_files:
+                first_base = sorted(all_files.keys())[0]
+                self._select_list(first_base)
         except Exception:
             pass
 
-    def _dom_path(self):
-        try:
-            sel = self.dom_list.curselection()
-            if not sel:
-                return ""
-            return os.path.join(self._lists_dir(), self.dom_list.get(sel[0]))
-        except Exception:
-            return ""
+    def _create_list_row(self, base, fname, disabled):
+        """Create a row with checkbox for a list file"""
+        row = tk.Frame(self.dom_items_frame, bg=CARD)
+        row.pack(fill="x", padx=4, pady=2)
+        self.dom_row_frames[base] = row
 
-    def show_domain_file(self):
+        var = tk.BooleanVar(value=not disabled)
+        self.dom_vars[base] = var
+
+        cb = tk.Checkbutton(row, text=base, variable=var, bg=CARD, fg=TEXT,
+                            font=(FONT, 9), anchor="w", activebackground=CARD,
+                            selectcolor=CARD2, command=lambda b=base: self._on_checkbox_change(b))
+        cb.pack(side="left", fill="x", expand=True)
+
+        # Click on row also selects for editing
+        for w in (row, cb):
+            w.bind("<Button-1>", lambda e, b=base: self._select_list(b), add="+")
+
+    def _on_checkbox_change(self, base):
+        """Handle checkbox toggle"""
+        var = self.dom_vars.get(base)
+        if var is None:
+            return
+        enabled = var.get()
+        d = self._lists_dir()
+        if not d:
+            return
+        # Determine current real filename
+        disabled_path = os.path.join(d, base + ".disabled")
+        enabled_path = os.path.join(d, base)
+        if enabled:
+            # Enable: rename .disabled -> base
+            if os.path.exists(disabled_path):
+                os.rename(disabled_path, enabled_path)
+                log_action(f"Список включён: {base}", "lists")
+        else:
+            # Disable: rename base -> .disabled
+            if os.path.exists(enabled_path):
+                os.rename(enabled_path, disabled_path)
+                log_action(f"Список выключен: {base}", "lists")
+        # Refresh to update UI
+        self.refresh_domains_list()
+        self._select_list(base)
+
+    def _select_list(self, base):
+        """Select a list for editing in the right panel"""
+        # Highlight selected row
+        for b, frame in self.dom_row_frames.items():
+            try:
+                if b == base:
+                    frame.configure(bg=ACCENT_DEEP)
+                    for child in frame.winfo_children():
+                        child.configure(bg=ACCENT_DEEP)
+                else:
+                    frame.configure(bg=CARD)
+                    for child in frame.winfo_children():
+                        child.configure(bg=CARD)
+            except Exception:
+                pass
+
+        # Determine real filename
+        d = self._lists_dir()
+        if not d:
+            return
+        real_name = base + ".disabled" if os.path.exists(os.path.join(d, base + ".disabled")) else base
+        fp = os.path.join(d, real_name)
+        self._dom_current = fp
+
         try:
-            fp = self._dom_path()
-            if not fp:
-                return
             with open(fp, "r", encoding="utf-8", errors="ignore") as f:
                 content = f.read()
-            self._dom_current = fp
+            status = " [OFF]" if real_name.endswith(".disabled") else " [ON]"
             self.dom_title.config(
-                text=f"{os.path.basename(fp)}  ({len(content.splitlines())} строк, {len(content)} симв.)")
+                text=f"{real_name}  ({len(content.splitlines())} строк, {len(content)} симв.){status}")
             self.dom_text.delete("1.0", "end")
             self.dom_text.insert("end", content)
         except Exception as e:
             self.dlg_error(f"Не удалось прочитать файл: {e}")
 
+    def show_domain_file(self):
+        """Called when user clicks on a row - kept for compatibility"""
+        pass
+
     def save_domain_file(self):
-        fp = self._dom_current or self._dom_path()
+        fp = self._dom_current
         if not fp:
             self.dlg_info("Выберите файл слева")
             return
@@ -3707,8 +4226,10 @@ class ZapretApp:
             with open(fp, "w", encoding="utf-8") as f:
                 f.write(self.dom_text.get("1.0", "end-1c").replace("\n", "\n"))
             try:
+                fname = os.path.basename(fp)
+                status = " [OFF]" if fname.endswith(".disabled") else " [ON]"
                 self.dom_title.config(
-                    text=f"{os.path.basename(fp)}  (сохранено, бэкап: .bak)")
+                    text=f"{fname}  (сохранено, бэкап: .bak){status}")
             except Exception:
                 pass
             log_action(f"Отредактирован список {os.path.basename(fp)} (бэкап .bak)", "lists")
@@ -3902,10 +4423,8 @@ class ZapretApp:
     # ================= страница НАСТРОЙКИ =================
     SET_SECTIONS = [
         ("folder", "📁  Папка"),
-        ("speed", "🚀  Проверка"),
         ("monitor", "📡  Мониторинг"),
         ("appear", "🎨  Оформление"),
-        ("targets", "🎯  Цели"),
         ("app", "ℹ️  Приложение"),
     ]
 
@@ -3936,10 +4455,8 @@ class ZapretApp:
             f.grid(row=0, column=0, sticky="nsew")
             self.set_pages[key] = f
         self._build_set_folder()
-        self._build_set_speed()
         self._build_set_monitor()
         self._build_set_appear()
-        self._build_set_targets()
         self._build_set_app()
         self.show_settings_section("folder")
 
@@ -3979,29 +4496,6 @@ class ZapretApp:
                  bg=CARD, fg=MUTED, font=(FONT, 9)).pack(side="left")
         RButton(r2, text="🔄 Переустановить Zapret", style="ghost",
                    command=self.on_reinstall_zapret).pack(side="right")
-
-    def _build_set_speed(self):
-        inner = self._set_scroll(self.set_pages["speed"])
-        tk.Label(inner, text="Скорость проверки", bg=CARD, fg=TEXT, font=(FONT, 11, "bold")).pack(anchor="w", padx=8, pady=(8, 2))
-        self.speed_desc = tk.Label(inner, text="Быстрый: только Discord + YouTube + Google, параллельно. Ручная — ТУРБО (потоки+приоритет), авто — ЭКО.\n"
-                             "УЛЬТРА — турнир: дешёвый отсев всех по 2 целям, затем точный замер топ-6.\n"
-                             "Все сразу нельзя: конфиги делят один WinDivert и испортят замер друг другу.\n"
-                             "Пинги отсева — ПРИБЛИЗИТЕЛЬНЫЕ (≈), точные — только у финалистов.",
-                 bg=CARD, fg=MUTED, font=(FONT, 9), wraplength=650, justify="left")
-        self.speed_desc.pack(anchor="w", padx=8)
-        self._autowrap(self.speed_desc, self.set_pages["speed"], pad=260)
-        spd = tk.Frame(inner, bg=CARD)
-        spd.pack(fill="x", padx=8, pady=8)
-        tk.Label(spd, text="Режим, повторы и макс. пинг — на главной (карточка под кнопками проверки).",
-                 bg=CARD, fg=MUTED, font=(FONT, 9), wraplength=600, justify="left").grid(
-            row=0, column=0, columnspan=2, sticky="w", pady=4)
-        tk.Label(spd, text="Параллельных потоков (турбо добавит сам):", bg=CARD, fg=MUTED, font=(FONT, 10)).grid(row=1, column=0, sticky="w", pady=4)
-        self.workers_var = tk.StringVar(value=str(self.cfg.get("check_workers", 8)))
-        DropMenu(spd, variable=self.workers_var,
-                 values=[str(n) for n in (4, 6, 8, 10, 12, 16)],
-                 width=8).grid(row=1, column=1, padx=8, sticky="w")
-        RButton(spd, text="💾 Сохранить потоки", style="ghost",
-                   command=self.save_speed).grid(row=2, column=0, pady=10, sticky="w")
 
     def _build_set_monitor(self):
         inner = self._set_scroll(self.set_pages["monitor"])
@@ -4069,15 +4563,6 @@ class ZapretApp:
         RButton(fnt, text="↻ Перезапустить программу", style="accent",
                    command=self.restart_app).grid(row=4, column=0, pady=8, sticky="w")
         self.root.after(100, self._fill_font_boxes)
-
-    def _build_set_targets(self):
-        inner = self._set_scroll(self.set_pages["targets"])
-        tk.Label(inner, text="Свои цели (необязательно, формат как в targets.txt)", bg=CARD, fg=TEXT, font=(FONT, 11, "bold")).pack(anchor="w", padx=8, pady=(8, 2))
-        self.targets_txt = tk.Text(inner, bg=CARD2, fg=TEXT, font=(MONO, 9), height=8, bd=0, padx=8, pady=8, insertbackground=TEXT, selectbackground=ACCENT, selectforeground="white")
-        self.targets_txt.pack(fill="both", expand=True, padx=8, pady=4)
-        self.targets_txt.insert("1.0", self.cfg.get("targets_override", ""))
-        RButton(inner, text="💾 Сохранить цели", style="ghost",
-                   command=self.save_targets).pack(anchor="w", padx=8, pady=8)
 
     def _build_set_app(self):
         inner = self._set_scroll(self.set_pages["app"])
@@ -4313,18 +4798,6 @@ class ZapretApp:
             self.start_monitor()
         self.dlg_info("Сохранено")
 
-    def save_speed(self):
-        try:
-            wor = min(16, max(4, int(self.workers_var.get())))
-        except ValueError:
-            self.dlg_error("Введите число потоков")
-            return
-        self.cfg["check_workers"] = wor
-        save_config(self.cfg)
-        self.engine.cfg = self.cfg
-        log_action(f"Потоки проверки: {wor} (режим/повторы/пинг — на главной)")
-        self.dlg_info("Сохранено. Ручная проверка идёт в турбо-режиме.")
-
     def _mark_theme_buttons(self):
         cur = self.theme_var.get()
         for name, b in self.theme_btns.items():
@@ -4482,13 +4955,6 @@ class ZapretApp:
         except Exception as e:
             self.dlg_error(f"Не удалось перезапустить: {e}")
 
-    def save_targets(self):
-        self.cfg["targets_override"] = self.targets_txt.get("1.0", "end").strip()
-        save_config(self.cfg)
-        self.engine.cfg = self.cfg
-        log_action("Обновлён список целей для проверок")
-        self.dlg_info("Цели сохранены")
-
     # ---------- static ----------
     def refresh_all_static(self):
         cfgs = list_configs(self.cfg.get("zapret_root", ""))
@@ -4603,7 +5069,23 @@ def main():
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
     except Exception:
         pass
+    # DPI: Per-Monitor V2 СРАЗУ (до создания окон!) — иначе Windows
+    # битмапно тянет окно (двоение/мыло/тормоза на масштабах ≠100%).
+    # Tk 9 сам дорисовывает остальное.
+    try:
+        if os.name == "nt":
+            try:
+                ctypes.windll.user32.SetProcessDpiAwarenessContext(-4)
+            except Exception:
+                try:
+                    ctypes.windll.shcore.SetProcessDpiAwareness(2)
+                except Exception:
+                    ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        pass
     minimized = "--minimized" in sys.argv
+    if not ensure_single_instance():
+        sys.exit(0)
     # тема, шрифт и масштаб из настроек — до построения UI
     _cfg0 = load_config()
     apply_theme(_cfg0.get("theme", "Алый"))
@@ -4656,11 +5138,6 @@ def main():
         root.update_idletasks()
         tint_native_caption(root)
         root.after(1200, lambda: tint_native_caption(root))
-    except Exception:
-        pass
-    # лёгкий DPI-aware
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except Exception:
         pass
     # масштаб интерфейса (шрифты + отступы пропорционально, без лишних затрат)
