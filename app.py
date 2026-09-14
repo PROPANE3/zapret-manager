@@ -36,7 +36,7 @@ try:
 except ImportError:
     winreg = None
 
-APP_VERSION = "1.13.0"
+APP_VERSION = "1.23.0"
 APP_NAME = "Zapret Manager"
 APP_REPO = "PROPANE3/zapret-manager"
 APP_ID = "Flowseal.ZapretManager"
@@ -146,6 +146,543 @@ def mode_key(label):
         return "full"
     return "quick"
 
+
+# ---------- Смешная опция (assets/funny option) ----------
+FUNNY_DIR = os.path.join(BASE_DIR, "assets", "funny option")
+# Маленький телик-оверлей поверх всего (места в layout не занимает).
+FUNNY_TV_SUB = 8          # 1920x1487 -> 240x186 на экране
+FUNNY_TV_W, FUNNY_TV_H = 240, 186
+# Экран телика в PNG прозрачный (замер по альфе): x 250..1390, y 248..945.
+# Гифка кладётся ЗАДНИМ слоем под картинку телика — безель сам маскирует
+# вылезающее, фоны гифок не трогаем (рисуем 1:1 как в файле, максимум — кроп
+# безелем). Центр экрана на канвасе:
+FUNNY_SCREEN_CX = (250 + 1390) // 2 // FUNNY_TV_SUB
+FUNNY_SCREEN_CY = (248 + 945) // 2 // FUNNY_TV_SUB
+# key -> [(файл, subsample), ...]: у некоторых есть _2-вариации
+# (no_responce_2, excelent_2) — тоже используются, ротация при каждом показе.
+# Сабсемплы подобраны под маленькое окошко экрана (143x88, см. FUNNY_HOLE_*):
+# меньше пикселей на кадр -> декод/отрисовка в разы дешевле.
+FUNNY_GIFS = {
+    "idle": [("idle_gif.gif", 4)],
+    "no_response": [("no_responce.gif", 3), ("no_responce_2.gif", 4)],
+    "bad": [("bad.gif", 2)],
+    "normal": [("normal.gif", 2)],
+    "good": [("good.gif", 3)],
+    "excellent": [("excellent.gif", 4), ("excelent_2.gif", 1)],
+    "bg": [("bg_g.gif", 1)],
+}
+# Точный размер экрана телика на канвасе (замер по альфе: x 250..1390,
+# y 248..945, сабсемпл TV 8). Кадры кропаются строго под него и не вылезают
+# наружу вообще (чёрные поля — как тьма экрана, фоны не трогаем).
+FUNNY_HOLE_W = (1390 - 250 + 7) // FUNNY_TV_SUB
+FUNNY_HOLE_H = (945 - 248 + 7) // FUNNY_TV_SUB
+
+
+def _fun_variant_spec(concrete):
+    """concrete 'key#i' -> (файл, subsample)."""
+    base, _, num = concrete.partition("#")
+    variants = FUNNY_GIFS[base]
+    return variants[int(num or 0) % len(variants)]
+
+
+def _fun_all_concrete():
+    """Все конкретные ключи ('bg#0', 'excellent#1', ...) для прогрева."""
+    out = []
+    for base, variants in FUNNY_GIFS.items():
+        for i in range(len(variants)):
+            out.append(f"{base}#{i}")
+    return out
+
+
+def _fun_blit_center(src, gw, gh, dw=FUNNY_HOLE_W, dh=FUNNY_HOLE_H):
+    """Центрировать кадр gw×gh в окно dw×dh, лишнее — обрезать.
+
+    Фоны не трогаем: копируем попиксельно 1:1; незаполненные поля —
+    чёрные (как тьма экрана). Возвращает bytes dw×dh×3.
+    """
+    out = bytearray(dw * dh * 3)
+    ox = (dw - gw) // 2
+    oy = (dh - gh) // 2
+    sx0 = max(0, -ox)
+    sy0 = max(0, -oy)
+    dx0 = max(0, ox)
+    dy0 = max(0, oy)
+    w = min(gw - sx0, dw - dx0)
+    h = min(gh - sy0, dh - dy0)
+    if w <= 0 or h <= 0:
+        return bytes(out)
+    for y in range(h):
+        s = ((sy0 + y) * gw + sx0) * 3
+        d = ((dy0 + y) * dw + dx0) * 3
+        out[d:d + w * 3] = src[s:s + w * 3]
+    return bytes(out)
+
+
+def _read_png_rgba(path):
+    """Прочитать PNG (8 бит, без чересстрочки) -> (w, h, bytearray RGBA)."""
+    import struct as _st
+    import zlib as _zl
+    with open(path, "rb") as f:
+        d = f.read()
+    if d[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("not a png")
+    w = h = bd = ct = inter = None
+    raw = b""
+    pos = 8
+    while pos < len(d):
+        ln = _st.unpack(">I", d[pos:pos + 4])[0]
+        typ = d[pos + 4:pos + 8]
+        if typ == b"IHDR":
+            w, h, bd, ct, _c, _f, inter = _st.unpack(">IIBBBBB",
+                                                    d[pos + 8:pos + 21])
+        elif typ == b"IDAT":
+            raw += d[pos + 8:pos + 8 + ln]
+        elif typ == b"IEND":
+            break
+        pos += 12 + ln
+    if bd != 8 or inter != 0 or ct not in (2, 6):
+        raise ValueError("only 8-bit non-interlaced RGB/RGBA")
+    ch = 4 if ct == 6 else 3
+    px = bytearray(_zl.decompress(raw))
+    stride = w * ch
+    out = bytearray(w * h * 4)
+    prev = bytearray(stride)
+    i = 0
+    for y in range(h):
+        f = px[i]
+        i += 1
+        line = px[i:i + stride]
+        i += stride
+        cur = bytearray(stride)
+        if f == 0:
+            cur[:] = line
+        elif f == 1:
+            for x in range(stride):
+                cur[x] = (line[x] + (cur[x - ch] if x >= ch else 0)) & 255
+        elif f == 2:
+            for x in range(stride):
+                cur[x] = (line[x] + prev[x]) & 255
+        elif f == 3:
+            for x in range(stride):
+                a = cur[x - ch] if x >= ch else 0
+                cur[x] = (line[x] + ((a + prev[x]) >> 1)) & 255
+        elif f == 4:
+            for x in range(stride):
+                a = cur[x - ch] if x >= ch else 0
+                b = prev[x]
+                c = prev[x - ch] if x >= ch else 0
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                best = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
+                cur[x] = (line[x] + best) & 255
+        else:
+            raise ValueError("bad png filter")
+        ro = y * w * 4
+        if ch == 4:
+            out[ro:ro + stride] = cur
+        else:
+            for x in range(w):
+                o = ro + x * 4
+                q = x * 3
+                out[o] = cur[q]
+                out[o + 1] = cur[q + 1]
+                out[o + 2] = cur[q + 2]
+                out[o + 3] = 255
+        prev = cur
+    return w, h, out
+
+
+def _crop_center_square(w, h, rgba):
+    """Центральный квадрат (для иконки: бока панорамы — вон)."""
+    s = min(w, h)
+    x0 = (w - s) // 2
+    y0 = (h - s) // 2
+    out = bytearray(s * s * 4)
+    for y in range(s):
+        src = ((y0 + y) * w + x0) * 4
+        dst = y * s * 4
+        out[dst:dst + s * 4] = rgba[src:src + s * 4]
+    return s, out
+
+
+def _encode_png_rgba(w, h, rgba):
+    import struct as _st
+    import zlib as _zl
+    raw = bytearray()
+    for y in range(h):
+        raw.append(0)
+        raw += rgba[y * w * 4:(y + 1) * w * 4]
+
+    def chunk(t, dd):
+        c = t + dd
+        return (_st.pack(">I", len(dd)) + c
+                + _st.pack(">I", _zl.crc32(c) & 0xFFFFFFFF))
+
+    png = b"\x89PNG\r\n\x1a\n"
+    png += chunk(b"IHDR", _st.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+    png += chunk(b"IDAT", _zl.compress(bytes(raw)))
+    png += chunk(b"IEND", b"")
+    return png
+
+
+def _wrap_ico(png_bytes):
+    """PNG -> .ico с одной PNG-записью (размер читается из IHDR, так что
+    квадрат 498 тоже валиден на Vista+)."""
+    import struct as _st
+    w, h = _st.unpack(">II", png_bytes[16:24])
+    wb = w if w < 256 else 0
+    hb = h if h < 256 else 0
+    head = _st.pack("<HHH", 0, 1, 1)
+    entry = _st.pack("<BBBBHHII", wb, hb, 0, 0, 1, 32, len(png_bytes), 6 + 16)
+    return head + entry + png_bytes
+
+
+def ensure_silly_ico():
+    """assets/icon_silly.ico из icon_silly.png (кроп в квадрат). Кэш: не
+    старше исходника. Возвращает путь или ''."""
+    try:
+        src = os.path.join(FUNNY_DIR, "icon_silly.png")
+        if not os.path.exists(src):
+            return ""
+        dst = os.path.join(FUNNY_DIR, "icon_silly.ico")
+        try:
+            if (os.path.exists(dst)
+                    and os.path.getmtime(dst) >= os.path.getmtime(src)):
+                return dst
+        except Exception:
+            pass
+        w, h, rgba = _read_png_rgba(src)
+        s, sq = _crop_center_square(w, h, rgba)
+        ico = _wrap_ico(_encode_png_rgba(s, s, sq))
+        try:
+            with open(dst, "wb") as f:
+                f.write(ico)
+            return dst
+        except Exception:
+            pass
+        try:
+            alt = os.path.join(DATA_DIR, "icon_silly.ico")
+            with open(alt, "wb") as f:
+                f.write(ico)
+            return alt
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+
+
+# ранг оценки конфига (0..4 из config_grade) -> гифка телика
+FUNNY_RANK_KEYS = ("no_response", "bad", "normal", "good", "excellent")
+# пол тика, мс: быстрее гранулярности таймеров Tk (~15 мс) всё равно нельзя,
+# а after(1) устраивал шторм под 1 КГц и вешал интерфейс
+FUNNY_MIN_TICK = 15
+
+
+# Сколько декодированных кадров несёт одно сообщение воркера.
+# Меньше — отзывчивее появление новой гифки, больше — меньше дёрганий очереди.
+FUNNY_CHUNK = 4
+
+
+class _FunWorker(threading.Thread):
+    """Фоновый декодер гифок (daemon на всё время жизни приложения).
+
+    Каждая гифка декодируется РОВНО ОДИН РАЗ целиком в фоне: дальше анимация —
+    это просто переключение готовых PhotoImage (ноль hex-строк, ноль put(),
+    ноль мусора для GC на каждый кадр). Именно покадровый put() с гигантскими
+    строками в главном потоке и вешал интерфейс. Tk тут НЕ трогаем (только
+    байты), сборка PhotoImage — в тике главного потока.
+    """
+
+    def __init__(self, gen_of):
+        super().__init__(daemon=True)
+        self.tasks = queue.Queue()
+        self.results = queue.Queue()
+        self._gen_of = gen_of
+        self.start()
+
+    def run(self):
+        while True:
+            try:
+                task = self.tasks.get()
+            except Exception:
+                return
+            if task is None:
+                return
+            key, gen = task
+            try:
+                fname, sub = _fun_variant_spec(key)
+                # bg — целиком, остальное — строгий кроп под экран телика
+                crop = not key.split("#")[0] == "bg"
+                player = GifPlayer(os.path.join(FUNNY_DIR, fname), sub)
+                total = len(player.frames)
+                if crop:
+                    size = (FUNNY_HOLE_W, FUNNY_HOLE_H)
+                else:
+                    size = (player.dw, player.dh)
+                batch = []
+                for i in range(total):
+                    if gen != self._gen_of(key):
+                        break  # гифка уже не нужна — бросаем
+                    delay = player.advance()
+                    if crop:
+                        frame = _fun_blit_center(bytes(player.buf),
+                                                 player.dw, player.dh)
+                    else:
+                        frame = bytes(player.buf)
+                    batch.append((frame, delay))
+                    if len(batch) >= FUNNY_CHUNK or i == total - 1:
+                        if gen != self._gen_of(key):
+                            break
+                        self.results.put(
+                            ("frames", key, gen, batch, size,
+                             i == total - 1))
+                        batch = []
+            except Exception as e:
+                try:
+                    self.results.put(("err", key, gen, str(e)[:100]))
+                except Exception:
+                    pass
+
+
+class GifPlayer:
+    """Инкрементальный GIF-плеер на чистом stdlib.
+
+    Зачем свой, а не tk.PhotoImage(format='gif -index N'): Tk при каждом
+    запросе кадра N пере-декодирует кадры 0..N (квадратичная сложность —
+    237-кадровый good.gif грузился бы минутами). Здесь файл парсится один
+    раз, кадры декодируются строго по одному вперёд (LZW + disposal +
+    transparency + чересстрочка по спеке GIF89a) прямо в display-буфер
+    с субсемплированием. Все кадры, родные задержки (delay_cs*10 мс,
+    0 -> 100 мс), фоны — попиксельно как в файле.
+    """
+
+    def __init__(self, path, subsample=1):
+        with open(path, "rb") as f:
+            d = f.read()
+        if d[:6] not in (b"GIF87a", b"GIF89a"):
+            raise ValueError("not a gif")
+        self.w = int.from_bytes(d[6:8], "little")
+        self.h = int.from_bytes(d[8:10], "little")
+        pos = 13
+        self.gct = None
+        if d[10] & 0x80:
+            m = 3 * (1 << ((d[10] & 7) + 1))
+            self.gct = d[pos:pos + m]
+            pos += m
+        self.frames = []
+        delay, disposal, trans = 0, 0, None
+        n = len(d)
+        while pos < n:
+            b = d[pos]
+            if b == 0x3B:
+                break
+            elif b == 0x21:
+                if d[pos + 1] == 0xF9:
+                    # 21 F9 04 packed delay_lo delay_hi trans_idx 00
+                    flags = d[pos + 3]
+                    delay = int.from_bytes(d[pos + 4:pos + 6], "little")
+                    disposal = (flags >> 2) & 7
+                    trans = d[pos + 6] if (flags & 1) else None
+                    pos += 8
+                else:
+                    pos += 2
+                    while True:
+                        sz = d[pos]
+                        pos += 1
+                        if sz == 0:
+                            break
+                        pos += sz
+            elif b == 0x2C:
+                fx = int.from_bytes(d[pos + 1:pos + 3], "little")
+                fy = int.from_bytes(d[pos + 3:pos + 5], "little")
+                fw = int.from_bytes(d[pos + 5:pos + 7], "little")
+                fh = int.from_bytes(d[pos + 7:pos + 9], "little")
+                packed = d[pos + 9]
+                pos += 10
+                lct = None
+                if packed & 0x80:
+                    m = 3 * (1 << ((packed & 7) + 1))
+                    lct = d[pos:pos + m]
+                    pos += m
+                lzw_min = d[pos]
+                pos += 1
+                data = bytearray()
+                while True:
+                    sz = d[pos]
+                    pos += 1
+                    if sz == 0:
+                        break
+                    data += d[pos:pos + sz]
+                    pos += sz
+                self.frames.append({
+                    "rect": (fx, fy, fw, fh),
+                    "inter": bool(packed & 0x40),
+                    "lct": lct, "lzw_min": lzw_min,
+                    "data": bytes(data),
+                    "delay": delay, "disposal": disposal, "trans": trans,
+                })
+                delay, disposal, trans = 0, 0, None
+            else:
+                raise ValueError("bad gif block")
+        if not self.frames:
+            raise ValueError("no frames")
+        self.sub = max(1, int(subsample))
+        self.dw = (self.w + self.sub - 1) // self.sub
+        self.dh = (self.h + self.sub - 1) // self.sub
+        self.buf = bytearray(self.dw * self.dh * 3)  # старт с чёрного
+        self._snap = None
+        self.idx = -1
+        self.cur_delay_ms = 100
+        # грязный прямоугольник display-координат для частичной отрисовки
+        # (x0, y0, x1, y1); None = весь кадр. Большинство кадров гифок —
+        # частичные обновления, полный put каждого кадра и тормозил анимацию.
+        self.dirty = None
+        self._prev_bbox = None
+
+    @staticmethod
+    def _lzw(data, lzw_min, expect):
+        out = bytearray()
+        clear = 1 << lzw_min
+        eoi = clear + 1
+        bits = lzw_min + 1
+        pos = 0
+        bitbuf = 0
+        nbits = 0
+        m = len(data)
+
+        def read():
+            nonlocal pos, bitbuf, nbits
+            while nbits < bits and pos < m:
+                bitbuf |= data[pos] << nbits
+                pos += 1
+                nbits += 8
+            if nbits < bits:
+                return -1
+            code = bitbuf & ((1 << bits) - 1)
+            bitbuf >>= bits
+            nbits -= bits
+            return code
+
+        table = [bytes([i]) for i in range(clear)] + [b"", b""]
+        prev = b""
+        while True:
+            code = read()
+            if code < 0:
+                break
+            if code == clear:
+                bits = lzw_min + 1
+                table = [bytes([i]) for i in range(clear)] + [b"", b""]
+                prev = b""
+                continue
+            if code == eoi:
+                break
+            if code < len(table) and table[code] != b"":
+                entry = table[code]
+            elif code == len(table) and prev:
+                entry = prev + prev[:1]
+            else:
+                break
+            out += entry
+            if len(out) >= expect:
+                break
+            if prev:
+                table.append(prev + entry[:1])
+                if len(table) == (1 << bits) and bits < 12:
+                    bits += 1
+            prev = entry
+        return bytes(out[:expect])
+
+    def _apply_prev_disposal(self):
+        if self.idx < 0:
+            return
+        fr = self.frames[self.idx]
+        if fr["disposal"] == 2:
+            fx, fy, fw, fh = fr["rect"]
+            s = self.sub
+            for dy in range(fy, fy + fh, s):
+                if dy >= self.h:
+                    break
+                row = (dy // s) * self.dw * 3
+                for dx in range(fx, fx + fw, s):
+                    if dx >= self.w:
+                        break
+                    o = row + (dx // s) * 3
+                    self.buf[o:o + 3] = b"\x00\x00\x00"
+        elif fr["disposal"] == 3 and self._snap is not None:
+            self.buf[:] = self._snap
+            self._snap = None
+
+    def _disp_bbox(self, rect):
+        """Прямоугольник кадра в display-координатах (с запасом на округление)."""
+        fx, fy, fw, fh = rect
+        s = self.sub
+        x0 = max(0, fx // s)
+        y0 = max(0, fy // s)
+        x1 = min(self.dw, (fx + fw + s - 1) // s)
+        y1 = min(self.dh, (fy + fh + s - 1) // s)
+        if x1 <= x0 or y1 <= y0:
+            return None
+        return (x0, y0, x1, y1)
+
+    @staticmethod
+    def _union(a, b):
+        if a is None:
+            return b
+        if b is None:
+            return a
+        return (min(a[0], b[0]), min(a[1], b[1]),
+                max(a[2], b[2]), max(a[3], b[3]))
+
+    def advance(self):
+        """Декодировать следующий кадр в буфер. Возвращает его задержку, мс."""
+        prev_bbox = self._prev_bbox
+        self._apply_prev_disposal()
+        self.idx = (self.idx + 1) % len(self.frames)
+        fr = self.frames[self.idx]
+        fx, fy, fw, fh = fr["rect"]
+        pal = fr["lct"] or self.gct
+        if pal is None:
+            raise ValueError("no palette")
+        if fr["disposal"] == 3:
+            self._snap = bytes(self.buf)
+        px = self._lzw(fr["data"], fr["lzw_min"], fw * fh)
+        s = self.sub
+        trans = fr["trans"]
+        if fr["inter"]:
+            full = bytearray(fw * fh)
+            p = 0
+            for (ystart, ystep) in ((0, 8), (4, 8), (2, 4), (1, 2)):
+                for yy in range(ystart, fh, ystep):
+                    full[yy * fw:(yy + 1) * fw] = px[p:p + fw]
+                    p += fw
+            px = bytes(full)
+        for sy in range(0, fh, s):
+            gy = fy + sy
+            if gy >= self.h:
+                break
+            row = (gy // s) * self.dw * 3
+            base = sy * fw
+            for sx in range(0, fw, s):
+                gx = fx + sx
+                if gx >= self.w:
+                    break
+                ci = px[base + sx] if base + sx < len(px) else 0
+                if trans is not None and ci == trans:
+                    continue
+                o = row + (gx // s) * 3
+                po = ci * 3
+                if po + 2 < len(pal):
+                    self.buf[o] = pal[po]
+                    self.buf[o + 1] = pal[po + 1]
+                    self.buf[o + 2] = pal[po + 2]
+        d = fr["delay"]
+        self.cur_delay_ms = (d * 10) if d > 0 else 100
+        # грязная зона = что нарисовали + что откатили (restore/сlear прошлого)
+        cur_bbox = self._disp_bbox(fr["rect"])
+        self.dirty = self._union(cur_bbox, prev_bbox)
+        self._prev_bbox = cur_bbox
+        return self.cur_delay_ms
+
 # ---------- темы оформления (имя -> палитра) ----------
 THEMES = {
     "Алый": {
@@ -239,6 +776,7 @@ DEFAULT_CONFIG = {
     "ui_scale": "Крупный",
     "mono_font": "Consolas",
     "theme": "Алый",
+    "silly_mode": False,
 }
 
 
@@ -761,24 +1299,38 @@ def build_service_args(zapret_root, bat_name):
     capturing = False
     for line in lines:
         if "winws.exe" in line.lower():
-            capturing = True
             idx = line.lower().find("winws.exe") + len("winws.exe")
             tail = line[idx:].strip()
             # убрать кавычку начала
             if tail.startswith('"'):
                 tail = tail[1:]
+            # упоминание без аргументов (echo/комментарий) — не запуск,
+            # иначе мусор перехватит парсинг раньше настоящей строки
+            if "--" not in tail:
+                continue
+            capturing = True
             args_parts.append(tail)
         elif capturing:
             s = line.strip()
-            if not s or s.startswith("::") or s.lower().startswith("@echo") or s.lower().startswith("cd ") \
-               or s.lower().startswith("call ") or s.lower().startswith("set ") or s.lower().startswith("echo"):
+            low = s.lower()
+            # конец блока аргументов: дальше служебные команды bat, а не winws
+            if low.startswith(("pause", "exit", "goto ", "goto:", ":eof",
+                               "popd", "endlocal", "title ", "color ",
+                               "timeout ", "choice ", "cls")):
+                break
+            if not s or s.startswith("::") or low.startswith("@echo") or low.startswith("cd ") \
+               or low.startswith("call ") or low.startswith("set ") or low.startswith("echo"):
                 # bat мог закончиться; но аргументы обычно в одном start-блоке
-                if "winws" in s.lower() or s.startswith("--") or s.startswith('"--'):
+                if "winws" in low or s.startswith("--") or s.startswith('"--'):
                     args_parts.append(s)
                 continue
             args_parts.append(s)
     args = " ".join(args_parts).replace("^", " ").strip()
-    args = re.sub(r"\s+", " ", args)
+    # отрезать хвосты обёртки start/cmd: висячие кавычки, скобки, & pause...
+    # (без rstrip('"'): закрывающая кавычка последнего аргумента обязана жить)
+    args = re.sub(r"\s+", " ", args).strip()
+    args = re.sub(r'\s+[&|)]+\s*(pause|exit|goto|popd|endlocal)?\s*$', "", args,
+                  flags=re.IGNORECASE).strip()
     if not args or "--" not in args:
         return None, "Не найдены аргументы winws в bat-файле"
     BIN = os.path.join(zapret_root, "bin") + os.sep
@@ -885,49 +1437,122 @@ def _split_win_args(args):
         return args.split()
 
 
-def start_winws_hidden(zapret_root, bat_name):
-    """Запуск конфига БЕЗ окон: winws.exe напрямую, без консоли и кнопки в таскбаре.
+def _strip_pair_quotes(s):
+    """Снять кавычки, только если ВЕСЬ токен в них обёрнут.
 
-    Раньше запускался .bat через cmd — оставалось свёрнутое окно winws
-    (консоль + кнопка «zapret: ...» в таскбаре). Теперь аргументы берутся
-    из bat (тот же парсер, что для службы) и winws стартует скрытым процессом.
-    Возвращает True, если процесс запущен.
+    Внутренние кавычки (--opt="C:\\path") НЕ ТРОГАТЬ: наивный strip('"')
+    съедал закрывающую кавычку, winws получал --opt="C:\\path (без закрытия),
+    падал при старте за миллисекунды — и проверка видела «не запустился»
+    по всем конфигам, хотя service.bat работал.
+    """
+    if len(s) >= 2 and s.startswith('"') and s.endswith('"'):
+        return s[1:-1]
+    return s
+
+
+def _poll_winws(timeout_s):
+    """Быстрая проверка «процесс есть» для стартовой цепочки (без settle)."""
+    t0 = time.time()
+    while time.time() - t0 < timeout_s:
+        try:
+            if winws_running():
+                return True
+        except Exception:
+            pass
+        time.sleep(0.3)
+    return False
+
+
+def _launch_direct(zapret_root, args):
+    """Попытка 1: winws.exe напрямую, полностью скрыто (без окон и миганий)."""
+    exe = os.path.join(zapret_root, "bin", "winws.exe")
+    if not os.path.exists(exe):
+        return False
+    cmd = [exe] + [_strip_pair_quotes(a) for a in _split_win_args(args)]
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 0  # SW_HIDE
+    subprocess.Popen(cmd, cwd=os.path.join(zapret_root, "bin"),
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     stdin=subprocess.DEVNULL, startupinfo=si,
+                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    return True
+
+
+def _launch_cmd_bat(zapret_root, bat_name, hidden):
+    """Попытка через настоящий bat (переменные раскрывает сам cmd) —
+    ровно так запускает service.bat, поэтому работает всегда.
+    hidden=True: консоль скрыта; False: свёрнута (как service.bat)."""
+    fp = os.path.join(zapret_root, bat_name)
+    if not os.path.exists(fp):
+        return False
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 0 if hidden else 6  # SW_HIDE / minimized
+    subprocess.Popen(["cmd.exe", "/c", fp], cwd=zapret_root,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     stdin=subprocess.DEVNULL, startupinfo=si,
+                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    return True
+
+
+def start_winws_hidden(zapret_root, bat_name):
+    """Запуск конфига: сначала скрыто напрямую, иначе — через bat-консоль.
+
+    Прямой скрытый запуск не оставляет окон и не мигает, но в чужом
+    окружении winws может умирать на старте (видно только по отсутствию
+    процесса). Поэтому проверяем появление процесса и при неудаче
+    откатываемся на запуск настоящего bat через консоль — так делает
+    service.bat, этот путь рабочий по построению. Возвращает True, если
+    процесс в итоге запущен.
     """
     try:
-        args, err = build_service_args(zapret_root, bat_name)
-        if not args:
-            return start_bat_minimized(zapret_root, bat_name)
-        exe = os.path.join(zapret_root, "bin", "winws.exe")
-        if not os.path.exists(exe):
-            return False
-        cmd = [exe] + [a.strip('"') for a in _split_win_args(args)]
-        si = subprocess.STARTUPINFO()
-        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        si.wShowWindow = 0  # SW_HIDE
-        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
-            subprocess, "DETACHED_PROCESS", 0)
-        subprocess.Popen(cmd, cwd=os.path.join(zapret_root, "bin"),
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         stdin=subprocess.DEVNULL, startupinfo=si,
-                         creationflags=flags)
-        return True
+        args, _err = build_service_args(zapret_root, bat_name)
     except Exception:
+        args = None
+    # 1. прямой скрытый (идеал: ни окон, ни миганий)
+    if args:
         try:
-            return start_bat_minimized(zapret_root, bat_name)
+            if _launch_direct(zapret_root, args) and _poll_winws(2.0):
+                return True
         except Exception:
-            return False
+            pass
+        try:
+            run_log_write(f"  {bat_name}: прямой запуск пуст — пробую через bat")
+        except Exception:
+            pass
+        stop_winws()
+        time.sleep(0.3)
+    # 2. настоящий bat в скрытой консоли (cmd сам раскрывает переменные)
+    try:
+        if _launch_cmd_bat(zapret_root, bat_name, hidden=True) \
+                and _poll_winws(2.5):
+            return True
+    except Exception:
+        pass
+    try:
+        stop_winws()
+    except Exception:
+        pass
+    time.sleep(0.3)
+    # 3. как service.bat: bat в свёрнутой консоли (мигнёт, но запустится)
+    try:
+        if _launch_cmd_bat(zapret_root, bat_name, hidden=False) \
+                and _poll_winws(3.0):
+            try:
+                run_log_write(f"  {bat_name}: запущен через свёрнутую консоль")
+            except Exception:
+                pass
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def start_bat_minimized(zapret_root, bat_name):
-    fp = os.path.join(zapret_root, bat_name)
+    """Совместимость: то же, что шаг 2 стартовой цепочки (скрытая консоль)."""
     try:
-        si = subprocess.STARTUPINFO()
-        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        si.wShowWindow = 6  # minimized
-        subprocess.Popen(["cmd.exe", "/c", fp], cwd=zapret_root,
-                         startupinfo=si,
-                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        return True
+        return bool(_launch_cmd_bat(zapret_root, bat_name, hidden=True))
     except Exception:
         return False
 
@@ -935,6 +1560,73 @@ def start_bat_minimized(zapret_root, bat_name):
 def winws_running():
     _, out = run_cmd(["tasklist", "/FI", "IMAGENAME eq winws.exe"], timeout=8)
     return "winws.exe" in out.lower()
+
+
+def wait_winws_alive(timeout_s=6.0, poll_s=0.5):
+    """Ждать появления winws в tasklist (для фоновых потоков; блокирует)."""
+    t0 = time.time()
+    while time.time() - t0 < timeout_s:
+        try:
+            if winws_running():
+                return True
+        except Exception:
+            pass
+        time.sleep(poll_s)
+    return False
+
+
+def winws_probe_output(zapret_root, bat_name, timeout_s=4.0):
+    """Диагностический запуск winws с перехватом вывода (без окна).
+
+    Скрытый боевой запуск при падении молчит (DEVNULL) — и приложение может
+    только гадать («нужны права администратора?»). Пробник запускает ТУ ЖЕ
+    командную строку, но с трубами: если winws падает сразу, в выводе будет
+    настоящая причина (битый путь hostlist, драйвер, занятый WinDivert...).
+    Возвращает текст вывода; переживший таймаут процесс гасится.
+    """
+    try:
+        args, err = build_service_args(zapret_root, bat_name)
+        if not args:
+            return f"парсер: {err}"
+        exe = os.path.join(zapret_root, "bin", "winws.exe")
+        if not os.path.exists(exe):
+            return f"нет файла: {exe}"
+        cmd = [exe] + [_strip_pair_quotes(a) for a in _split_win_args(args)]
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0  # окна всё равно нет, но вывод — в трубу
+        try:
+            p = subprocess.Popen(
+                cmd, cwd=os.path.join(zapret_root, "bin"),
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL, startupinfo=si,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                text=True, errors="ignore")
+        except OSError as e:
+            # 740 = нужен админ (манифест winws), 2 = нет файла и т.п.
+            return f"запуск невозможен: {e}"
+        try:
+            out, _ = p.communicate(timeout=timeout_s)
+            out = (out or "").strip()
+            if not out:
+                out = f"(пустой вывод, код выхода {p.returncode})"
+            # важно именно НАЧАЛО (там причина), хвост — для контекста
+            if len(out) > 1600:
+                out = out[:1200] + "\n…[обрезано]…\n" + out[-400:]
+            return out
+        except subprocess.TimeoutExpired:
+            try:
+                p.kill()
+            except Exception:
+                pass
+            try:
+                p.communicate(timeout=3)
+            except Exception:
+                pass
+            return (f"<процесс жив (пережил {timeout_s:g} c) — "
+                    f"командная строка в порядке>")
+    except Exception as e:
+        return f"диагностика не удалась: {e}"
 
 
 # ---- системная шторка в цветах темы (Windows 11: DWM caption/border) ----
@@ -1448,6 +2140,22 @@ class CheckEngine:
     def cancel(self):
         self.cancel_flag.set()
 
+    def _wait_winws_logged(self, bat, timeout_s, log_cb, fast=False):
+        """Ждать winws; при первом за проверку промахе — снять диагноз
+        пробником (настоящий вывод winws) один раз, не по каждому конфигу."""
+        if wait_winws_ready(timeout_s, fast=fast):
+            return True
+        if log_cb and not getattr(self, "_diag_done", False):
+            self._diag_done = True
+            try:
+                diag = winws_probe_output(self.cfg.get("zapret_root", ""),
+                                          bat, timeout_s=2.5)
+                if diag:
+                    log_cb(f"  диагностика {bat}: {diag[:300]}")
+            except Exception:
+                pass
+        return False
+
     def probe_many(self, targets, timeout, ping_thr, repeat, workers):
         """Параллельная проверка целей в пуле потоков — главный источник ускорения."""
         ping_cap = min(ping_thr, 1500)
@@ -1523,6 +2231,7 @@ class CheckEngine:
             turbo = set_process_priority(True)
         all_results = {}
         self.abort_reason = ""
+        self._diag_done = False  # диагноз пробника — один раз за проверку
         # гейт: без сети проверять нечего (иначе 22 × таймауты впустую)
         if not network_alive():
             if log_cb:
@@ -1594,7 +2303,7 @@ class CheckEngine:
                 log_cb(f"[{idx+1}/{total}] Запуск {bat} …")
             t0 = time.time()
             start_winws_hidden(self.cfg["zapret_root"], bat)
-            if not wait_winws_ready(5.0):
+            if not self._wait_winws_logged(bat, 5.0, log_cb):
                 if log_cb:
                     log_cb(f"  {bat}: winws не запустился — пропуск")
                 all_results[bat] = {"ok": 0, "fail": len(targets), "rows": [],
@@ -1697,7 +2406,7 @@ class CheckEngine:
                 continue
 
             start_winws_hidden(self.cfg["zapret_root"], bat)
-            if not wait_winws_ready(3.0, fast=True):
+            if not self._wait_winws_logged(bat, 3.0, log_cb, fast=True):
                 if log_cb:
                     log_cb(f"  {bat}: winws не запустился — пропуск")
                 all_results[bat] = {"ok": 0, "fail": len(screen_ping_only), "rows": [],
@@ -1758,7 +2467,7 @@ class CheckEngine:
                 log_cb(f"[финал {j+1}/{len(finalists)}] {bat} …")
             t0 = time.time()
             start_winws_hidden(self.cfg["zapret_root"], bat)
-            if not wait_winws_ready(5.0):
+            if not self._wait_winws_logged(bat, 5.0, log_cb):
                 if log_cb:
                     log_cb(f"  {bat}: winws не запустился в финале")
                 all_results[bat]["final"] = True
@@ -2314,6 +3023,94 @@ class DropMenu(tk.Frame):
             self._pop = None
 
 
+class ToolTip:
+    """Подсказка при наведении с удержанием: всплывает через ~0.6 с.
+
+    Только stdlib (Toplevel + after). Привязывается к любому виджету:
+    add_tooltip(widget, text). Текст с переносами (wraplength).
+    """
+
+    def __init__(self, widget, text, delay_ms=600):
+        self.widget = widget
+        self.text = text
+        self.delay_ms = delay_ms
+        self._after = None
+        self._tip = None
+        try:
+            widget.bind("<Enter>", self._schedule, add="+")
+            widget.bind("<Leave>", self._hide, add="+")
+            widget.bind("<ButtonPress-1>", self._hide, add="+")
+        except Exception:
+            pass
+
+    def _schedule(self, _e=None):
+        self._hide()
+        try:
+            self._after = self.widget.after(self.delay_ms, self._show)
+        except Exception:
+            pass
+
+    def _show(self, _e=None):
+        self._after = None
+        if self._tip is not None:
+            return
+        try:
+            x = self.widget.winfo_rootx()
+            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
+        except Exception:
+            return
+        try:
+            tip = tk.Toplevel(self.widget)
+            tip.overrideredirect(True)
+            tip.attributes("-topmost", True)
+            tip.configure(bg=BORDER)
+            frm = tk.Frame(tip, bg=CARD2, padx=10, pady=8)
+            frm.pack(fill="both", expand=True, padx=1, pady=1)
+            tk.Label(frm, text=self.text, bg=CARD2, fg=TEXT, font=(FONT, 9),
+                     wraplength=300, justify="left").pack()
+            tip.update_idletasks()
+            try:
+                sw = tip.winfo_screenwidth()
+                ww = tip.winfo_reqwidth()
+                if x + ww > sw - 10:
+                    x = max(10, sw - ww - 10)
+            except Exception:
+                pass
+            tip.geometry(f"+{x}+{y}")
+            self._tip = tip
+        except Exception:
+            pass
+
+    def _hide(self, _e=None):
+        try:
+            if self._after is not None:
+                try:
+                    self.widget.after_cancel(self._after)
+                except Exception:
+                    pass
+                self._after = None
+        except Exception:
+            pass
+        try:
+            t, self._tip = self._tip, None
+            if t is not None:
+                t.destroy()
+        except Exception:
+            self._tip = None
+
+
+def add_tooltip(widget, text, delay_ms=600):
+    """Навесить подсказку «наведи и подержи» на виджет (или список виджетов)."""
+    try:
+        widgets = list(widget) if isinstance(widget, (list, tuple)) else [widget]
+        for w in widgets:
+            if w is not None:
+                ToolTip(w, text, delay_ms)
+    except Exception:
+        pass
+    return widget
+
+
 class ZapretApp:
     def __init__(self, root, minimized=False):
         self.root = root
@@ -2373,6 +3170,13 @@ class ZapretApp:
         self.check_app_updates()
         # resource monitor
         self.start_resource_monitor()
+        # смешная опция из настроек — с задержкой, чтобы не тормозить старт
+        # (декодирование гифок занимает секунду-другую)
+        if self.cfg.get("silly_mode"):
+            try:
+                self.root.after(800, self.apply_silly_mode)
+            except Exception:
+                pass
 
     def _on_map_chrome(self, _e=None):
         # Tk возвращает WS_CAPTION при первом показе — снять снова.
@@ -2598,7 +3402,7 @@ class ZapretApp:
         sb = tk.Frame(body, bg=SIDEBAR, width=230)
         sb.grid(row=0, column=0, sticky="nsew")
         sb.grid_propagate(False)
-        logo = tk.Label(sb, text="🔥 Zapret Manager", bg=SIDEBAR, fg=TEXT, font=(FONT, 14, "bold"), anchor="w")
+        logo = tk.Label(sb, text="🔥 Меню", bg=SIDEBAR, fg=TEXT, font=(FONT, 14, "bold"), anchor="w")
         logo.pack(fill="x", padx=18, pady=(20, 4))
         sub = tk.Label(sb, text="DPI bypass control", bg=SIDEBAR, fg=MUTED, font=(FONT, 9), anchor="w")
         sub.pack(fill="x", padx=18, pady=(0, 16))
@@ -2622,7 +3426,13 @@ class ZapretApp:
             self.nav_btns[key] = b
         sb_bottom = tk.Frame(sb, bg=SIDEBAR)
         sb_bottom.pack(side="bottom", fill="x", padx=18, pady=16)
-        
+
+        # Фоновая гифка смешной опции — в левом меню, без подписей.
+        # Шире сайдбара (220 > 194): Label фиксированной ширины центрирует
+        # и кропит бока (максимум, что разрешено с фонами, — обрезать).
+        # Пакуется только при включённой опции (см. apply_silly_mode).
+        self.fun_bg_lbl = tk.Label(sb_bottom, bg=SIDEBAR, width=194,
+                                   anchor="center")
         # Resource monitor
         self.res_frame = tk.Frame(sb_bottom, bg=SIDEBAR)
         self.res_frame.pack(fill="x", pady=(0, 8))
@@ -2655,9 +3465,12 @@ class ZapretApp:
         
         self.admin_lbl = tk.Label(sb_bottom, text="", bg=SIDEBAR, fg=MUTED, font=(FONT, 9))
         self.admin_lbl.pack(anchor="w")
-        tk.Label(sb_bottom, text=f"v{APP_VERSION} • stdlib • ~20 МБ RAM",
+        tk.Label(sb_bottom, text=f"v{APP_VERSION}",
                  bg=SIDEBAR, fg="#6B5A5C", font=(FONT, 8)).pack(anchor="w", pady=(4, 0))
 
+        # смешной уголок — маленький телик-оверлей поверх всего окна
+        # (места в layout не занимает) + фон в левом меню
+        self.build_fun_panel()
         # main
         main = tk.Frame(body, bg=BG)
         main.grid(row=0, column=1, sticky="nsew")
@@ -3009,24 +3822,53 @@ class ZapretApp:
         qo.pack(fill="x", pady=(0, 12))
         qf = tk.Frame(quick, bg=CARD)
         qf.pack(fill="x", padx=16, pady=10)
-        tk.Label(qf, text="Режим:", bg=CARD, fg=MUTED, font=(FONT, 10)).pack(side="left")
+        mode_lbl = tk.Label(qf, text="Режим:", bg=CARD, fg=MUTED, font=(FONT, 10))
+        mode_lbl.pack(side="left")
         self.q_mode_var = tk.StringVar(value=mode_label(self.cfg.get("check_mode", "quick")))
-        DropMenu(qf, variable=self.q_mode_var, values=list(MODE_LABELS.values()),
-                 width=26).pack(side="left", padx=(6, 14))
-        tk.Label(qf, text="Повторы:", bg=CARD, fg=MUTED, font=(FONT, 10)).pack(side="left")
+        mode_menu = DropMenu(qf, variable=self.q_mode_var, values=list(MODE_LABELS.values()),
+                             width=26)
+        mode_menu.pack(side="left", padx=(6, 14))
+        rep_lbl = tk.Label(qf, text="Повторы:", bg=CARD, fg=MUTED, font=(FONT, 10))
+        rep_lbl.pack(side="left")
         self.q_repeat_var = tk.StringVar(value=str(self.cfg.get("check_repeat", 2)))
-        DropMenu(qf, variable=self.q_repeat_var, values=["1", "2", "3"],
-                 width=8).pack(side="left", padx=(6, 14))
-        tk.Label(qf, text="Макс. пинг, мс:", bg=CARD, fg=MUTED, font=(FONT, 10)).pack(side="left")
+        rep_menu = DropMenu(qf, variable=self.q_repeat_var, values=["1", "2", "3"],
+                            width=8)
+        rep_menu.pack(side="left", padx=(6, 14))
+        thr_lbl = tk.Label(qf, text="Макс. пинг, мс:", bg=CARD, fg=MUTED, font=(FONT, 10))
+        thr_lbl.pack(side="left")
         self.q_thr_var = tk.StringVar(value=str(self.cfg.get("ping_threshold_ms", 5000)))
-        ttk.Entry(qf, textvariable=self.q_thr_var, width=8).pack(side="left", padx=(6, 14))
-        tk.Label(qf, text="Потоки:", bg=CARD, fg=MUTED, font=(FONT, 10)).pack(side="left")
+        thr_entry = ttk.Entry(qf, textvariable=self.q_thr_var, width=8)
+        thr_entry.pack(side="left", padx=(6, 14))
+        wor_lbl = tk.Label(qf, text="Потоки:", bg=CARD, fg=MUTED, font=(FONT, 10))
+        wor_lbl.pack(side="left")
         self.q_workers_var = tk.StringVar(value=str(self.cfg.get("check_workers", 8)))
-        DropMenu(qf, variable=self.q_workers_var,
-                 values=[str(n) for n in (4, 6, 8, 10, 12, 16)],
-                 width=8).pack(side="left", padx=(6, 14))
-        RButton(qf, text="💾", style="accent", height=30,
-                   command=self.save_quick_settings).pack(side="left")
+        wor_menu = DropMenu(qf, variable=self.q_workers_var,
+                            values=[str(n) for n in (4, 6, 8, 10, 12, 16)],
+                            width=8)
+        wor_menu.pack(side="left", padx=(6, 14))
+        save_btn = RButton(qf, text="💾", style="accent", height=30,
+                           command=self.save_quick_settings)
+        save_btn.pack(side="left")
+        # подсказки «наведи и подержи» — что делает каждая опция
+        add_tooltip([mode_lbl, mode_menu],
+                    "Режим проверки:\n"
+                    "• Быстрый — только Discord+YouTube (~7 целей), в ~3 раза быстрее.\n"
+                    "• Полный — все цели из utils/targets.txt.\n"
+                    "• Ультра — сначала дешёвый отсев всех по пингу, "
+                    "затем точный замер топ-6.")
+        add_tooltip([rep_lbl, rep_menu],
+                    "Повторы: сколько раз запрашивать каждую HTTP-цель.\n"
+                    "Зачёт при первом успехе — дальше не ждём.\n"
+                    "Больше повторов — точнее, но проверка дольше.")
+        add_tooltip([thr_lbl, thr_entry],
+                    "Макс. пинг (мс): порог для оценки.\n"
+                    "Пинг ниже порога считается хорошим и влияет на оценку "
+                    "конфига и на срабатывание автомониторинга.")
+        add_tooltip([wor_lbl, wor_menu],
+                    "Потоки: сколько целей проверять параллельно.\n"
+                    "Больше потоков — быстрее, но выше нагрузка на сеть и CPU.\n"
+                    "При ручной проверке включается ТУРБО (потоки ×2).")
+        add_tooltip(save_btn, "Сохранить режим, повторы, пинг и потоки.\nПрименятся к следующей проверке.")
         # баннер обновления zapret (скрыт, показывается при наличии апдейта)
         self.update_banner_o, ub = self.card(inner)
         self.update_banner_o.pack(fill="x", pady=(0, 12))
@@ -3084,11 +3926,14 @@ class ZapretApp:
         
         # Start ping monitor
         self._start_ping_monitor()
-        # список конфигов + лог
+        # список конфигов + пинги: левая карточка (конфиги) никогда не
+        # схлопывается — у неё вес и минимальная ширина; правая (таблица)
+        # при большом числе колонок ужимается сама, а не сосед.
         mid = tk.Frame(inner, bg=BG)
         mid.pack(fill="x")
-        mid.columnconfigure(0, weight=1)
-        mid.columnconfigure(1, weight=1)
+        mid.rowconfigure(0, weight=1)
+        mid.columnconfigure(0, weight=1, minsize=240)
+        mid.columnconfigure(1, weight=2, minsize=280)
         o1, left = self.card(mid)
         o1.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         tk.Label(left, text="Конфиги (▶ — применить без проверки)", bg=CARD, fg=TEXT, font=(FONT, 12, "bold")).pack(anchor="w", padx=14, pady=(12, 6))
@@ -3107,10 +3952,10 @@ class ZapretApp:
         o2, right = self.card(mid)
         o2.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
         tk.Label(right, text="Пинги по конфигам", bg=CARD, fg=TEXT, font=(FONT, 12, "bold")).pack(anchor="w", padx=14, pady=(12, 4))
-        tk.Label(right, text="DS=Discord  YT=YouTube  + пользовательские цели", bg=CARD, fg=MUTED, font=(FONT, 8)).pack(anchor="w", padx=14, pady=(0, 6))
+        tk.Label(right, text="DS=Discord  YT=YouTube", bg=CARD, fg=MUTED, font=(FONT, 8)).pack(anchor="w", padx=14, pady=(0, 6))
         gwrap = tk.Frame(right, bg=CARD)
         gwrap.pack(fill="both", expand=True, padx=14, pady=(0, 12))
-        # Dynamic columns: config, DS, YT, user targets..., grade
+        # Только Discord и YouTube: лишних колонок нет (детали — по клику ниже)
         self.grade_tree_cols = ["config", "discord", "youtube", "grade"]
         self.grade_tree = ttk.Treeview(gwrap, columns=self.grade_tree_cols, show="headings", height=12)
         for c, w, t in [("config", 170, "Конфиг"), ("discord", 60, "DS"),
@@ -3146,74 +3991,19 @@ class ZapretApp:
         for v in self.cfg_vars.values():
             v.set(val)
 
-    def _rebuild_grade_tree_cols(self):
-        """Rebuild grade tree columns based on current targets"""
-        try:
-            targets = parse_targets(self.cfg["zapret_root"])
-            user_targets = [t for t in targets if t[0] not in QUICK_NAMES]
-            user_names = [t[0] for t in user_targets]
-            
-            # Build new columns: config, discord, youtube, user targets..., grade
-            new_cols = ["config", "discord", "youtube"] + user_names + ["grade"]
-            
-            if new_cols != self.grade_tree_cols:
-                self.grade_tree_cols = new_cols
-                self.grade_tree["columns"] = new_cols
-                # Reconfigure all columns
-                for c in new_cols:
-                    if c == "config":
-                        w, t = 170, "Конфиг"
-                        anchor = "w"
-                    elif c == "discord":
-                        w, t = 60, "DS"
-                        anchor = "center"
-                    elif c == "youtube":
-                        w, t = 60, "YT"
-                        anchor = "center"
-                    elif c == "grade":
-                        w, t = 110, "Оценка"
-                        anchor = "center"
-                    else:
-                        # User target - abbreviate if long
-                        display = c[:8] if len(c) > 8 else c
-                        w, t = 70, display
-                        anchor = "center"
-                    self.grade_tree.heading(c, text=t)
-                    self.grade_tree.column(c, width=w, anchor=anchor, stretch=(c == "config"))
-        except Exception:
-            pass
-
     def _grade_row(self, bat, v):
-        """Строка таблицы пингов: (values, tag). Нефиналисты Ультры — с ≈."""
+        """Строка таблицы пингов: (values, tag). Только Discord и YouTube.
+        Нефиналисты Ультры — с ≈. Остальные цели — в деталях по клику."""
         if not v.get("started"):
-            # Build empty values for all columns
-            vals = [bat]
-            for c in self.grade_tree_cols:
-                if c not in ("config", "grade"):
-                    vals.append("—")
-            vals.append("Не работает")
-            return tuple(vals), "g0"
-        
+            return (bat, "—", "—", "Не работает"), "g0"
         dm, ym = service_pings(v.get("rows", []))
         text, _color, rank = config_grade(dm, ym)
         if v.get("final", True) is False:
             text += " ≈"
-        
-        # Build values for all columns
-        vals = [bat, fmt_ping(dm), fmt_ping(ym)]
-        # Add user target pings
-        rows_by_name = {r["name"]: r for r in v.get("rows", [])}
-        for c in self.grade_tree_cols:
-            if c not in ("config", "discord", "youtube", "grade"):
-                r = rows_by_name.get(c)
-                vals.append(fmt_ping(r["ping_ms"]) if r else "—")
-        vals.append(text)
-        return tuple(vals), f"g{rank}"
+        return (bat, fmt_ping(dm), fmt_ping(ym), text), f"g{rank}"
 
     def _insert_grade_row(self, bat, v):
         try:
-            # Ensure columns are up to date
-            self._rebuild_grade_tree_cols()
             vals, tag = self._grade_row(bat, v)
             iid = self.grade_tree.insert("", "end", values=vals, tags=(tag,))
             self.grade_tree.see(iid)
@@ -3260,6 +4050,18 @@ class ZapretApp:
                 self._insert_grade_row(name, res)
         except Exception:
             pass
+        # смешная опция: телик показывает гифку по оценке текущего конфига
+        try:
+            if self.cfg.get("silly_mode") and res is not None:
+                if res.get("started"):
+                    dm, ym = service_pings(res.get("rows", []))
+                    _txt, _col, rank = config_grade(dm, ym)
+                else:
+                    _txt, rank = "Не работает", 0
+                key = FUNNY_RANK_KEYS[rank] if 0 <= rank <= 4 else "idle"
+                self._fun_show_tv(key)
+        except Exception:
+            pass
 
     def selected_configs(self):
         return [k for k, v in self.cfg_vars.items() if v.get()]
@@ -3301,7 +4103,23 @@ class ZapretApp:
         if self.engine.running:
             self.dlg_info("Проверка уже идёт")
             return
-        run_log_reset(f"Конфигов: {len(bat_list)}")
+        # снимок списка: смена галочек/обновление каталога посреди проверки
+        # не должны трогать ни текущий замер, ни окно конфигов слева
+        bat_list = list(bat_list or [])
+        if not bat_list:
+            self.dlg_info("Выберите хотя бы один конфиг")
+            return
+        try:
+            _all = parse_targets(self.cfg["zapret_root"])
+            _mode = self.cfg.get("check_mode", "quick")
+            _probed = quick_filter(_all) if _mode == "quick" else _all
+            _names = ", ".join(n for n, _v in _probed) or "—"
+            _n = len(_probed)
+        except Exception:
+            _mode, _names, _n = self.cfg.get("check_mode", "quick"), "—", "?"
+        run_log_reset(f"Конфигов: {len(bat_list)} • режим: {mode_label(_mode)}\n"
+                      f"Цели проверки ({_n}): {_names}\n"
+                      f"Конфиги: {', '.join(bat_list)}")
         if not is_admin():
             run_log_write("⚠ Нет прав администратора — winws может не запуститься. "
                           "Запустите приложение через run.bat (ПКМ → Запуск от администратора).")
@@ -3311,6 +4129,11 @@ class ZapretApp:
         self.btn_check_sel.config(state="disabled")
         self.btn_check_all.config(state="disabled")
         self.btn_cancel.config(state="normal")
+        try:
+            if self.cfg.get("silly_mode"):
+                self._fun_show_tv("idle")
+        except Exception:
+            pass
         self.set_status("проверка…", YELLOW)
         self.prog_lbl.config(text=f"0/{len(bat_list)} • запуск…")
         log_action(f"Старт проверки конфигов: {', '.join(bat_list)}")
@@ -3327,6 +4150,12 @@ class ZapretApp:
 
     def on_check_done(self, res):
         self.last_results = res or {}
+        # проверки больше нет — телик снова idle
+        try:
+            if self.cfg.get("silly_mode"):
+                self._fun_show_tv("idle")
+        except Exception:
+            pass
         self.btn_check_sel.config(state="normal")
         self.btn_check_all.config(state="normal")
         self.btn_cancel.config(state="disabled")
@@ -3639,56 +4468,636 @@ class ZapretApp:
         except Exception:
             pass
 
+    # ================= Смешная опция =================
+    def build_fun_panel(self):
+        """Маленький телик-оверлей поверх всего окна + фон в левом меню.
+
+        Места в layout не занимает: телик — place() в углу окна (root),
+        поверх всех страниц; фоновая гифка — fun_bg_lbl в сайдбаре.
+        Никаких подписей про содержимое — только картинки. Гифка экрана
+        лежит ЗАДНИМ слоем под картинкой телика (у неё прозрачный экран),
+        фоны гифок не трогаем — рисуем попиксельно как в файле.
+        """
+        # key -> {"photos": [PhotoImage], "delays": [ms], "done": bool,
+        #           "size": (dw, dh)} — готовые кадры (декод один раз в фоне)
+        self._fun_cache = {}
+        self._fun_loading = set()  # ключи, уже заказанные воркеру
+        self._fun_keygen = {}  # key -> поколение (отмена устаревшего декода)
+        self._fun_variant_idx = {}  # base -> индекс текущей вариации _2
+        self._fun_anim = {"tv": {"key": None, "after": None, "shown": -1},
+                          "bg": {"key": None, "after": None, "shown": -1}}
+        self._fun_worker = None
+        self._fun_visible = False
+        self._fun_tv_img = None
+        self._fun_tv_item = None
+        self._fun_screen_item = None
+        self._silly_icon = None
+        # тонкая рамка + чёрный канвас: прозрачные углы и поля гифки — как тьма
+        wrap = tk.Frame(self.root, bg=BORDER, padx=1, pady=1)
+        self.fun_tv_wrap = wrap
+        self.fun_tv_canvas = tk.Canvas(wrap, width=FUNNY_TV_W, height=FUNNY_TV_H,
+                                       bg="#000000", highlightthickness=0, bd=0)
+        self.fun_tv_canvas.pack()
+        self._fun_place_args = {"in_": self.root, "relx": 1.0, "rely": 1.0,
+                                "x": -12, "y": -12, "anchor": "se"}
+
+    def _fun_overlay_show(self):
+        try:
+            self.fun_tv_wrap.place(**self._fun_place_args)
+            self.fun_tv_wrap.lift()
+        except Exception:
+            pass
+
+    def _fun_overlay_hide(self):
+        try:
+            self.fun_tv_wrap.place_forget()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _fun_buf_to_tcl(buf, dw, dh):
+        """Буфер кадра -> tcl-строка для PhotoImage.put. Вызывается только
+        при сборке новых кадров (не на каждый тик)."""
+        rows = []
+        for y in range(dh):
+            base = y * dw * 3
+            rows.append("{" + " ".join(
+                "#%02x%02x%02x" % (buf[base + x * 3], buf[base + x * 3 + 1],
+                                   buf[base + x * 3 + 2])
+                for x in range(dw)) + "}")
+        return " ".join(rows)
+
+    def _fun_request(self, key):
+        """Заказать воркеру полный декод гифки (один раз; повтор — no-op).
+
+        key — конкретный ('bg#0', 'excellent#1'); базу в конкретный
+        превращает _fun_play (ротация вариаций).
+        """
+        try:
+            _fun_variant_spec(key)  # проверка существования
+            if key in self._fun_cache or key in self._fun_loading:
+                return
+            if self._fun_worker is None:
+                return
+            self._fun_loading.add(key)
+            gen = self._fun_keygen.get(key, 0) + 1
+            self._fun_keygen[key] = gen
+            self._fun_worker.tasks.put((key, gen))
+        except Exception:
+            pass
+
+    def _fun_consume_chunks(self):
+        """Забрать готовые чанки у воркера (сырые кадры; в PhotoImage
+        собираются лениво, по мере показа — без пачек-подвисаний)."""
+        try:
+            worker = self._fun_worker
+            if worker is None:
+                return
+            while True:
+                try:
+                    res = worker.results.get_nowait()
+                except queue.Empty:
+                    break
+                if not res or res[0] == "err":
+                    continue
+                _tag, key, gen, batch, size, done = res
+                if gen != self._fun_keygen.get(key, -1):
+                    continue  # устаревший декод — выбросить
+                ent = self._fun_cache.get(key)
+                if ent is None:
+                    ent = {"raw": [], "photos": [], "delays": [],
+                           "done": False, "size": size}
+                    self._fun_cache[key] = ent
+                try:
+                    for buf, dms in batch:
+                        ent["raw"].append(buf)
+                        ent["photos"].append(None)
+                        ent["delays"].append(dms)
+                    if done:
+                        ent["done"] = True
+                        self._fun_loading.discard(key)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    def _fun_cached_photo(self, key, idx):
+        """Готовый PhotoImage кадра idx (собрать при первом показе)."""
+        ent = self._fun_cache.get(key)
+        if ent is None or idx >= len(ent["photos"]):
+            return None
+        ph = ent["photos"][idx]
+        if ph is None:
+            try:
+                dw, dh = ent["size"]
+                buf = ent["raw"][idx]
+                if buf is None:
+                    return None
+                ph = tk.PhotoImage(width=dw, height=dh)
+                ph.put(self._fun_buf_to_tcl(buf, dw, dh))
+                ent["photos"][idx] = ph
+                ent["raw"][idx] = None  # байты больше не нужны
+            except Exception:
+                return None
+        return ph
+
+    def _fun_stop_slot(self, which):
+        try:
+            st = self._fun_anim[which]
+            if st.get("after") is not None:
+                try:
+                    self.root.after_cancel(st["after"])
+                except Exception:
+                    pass
+            st["after"] = None
+            st["key"] = None
+            st["base"] = None
+        except Exception:
+            pass
+
+    def _fun_tick(self, which):
+        """Тик анимации: переключить на следующий ГОТОВЫЙ кадр.
+
+        Тяжёлой работы нет вообще: декод — один раз в фоне, здесь только
+        смена картинки (itemconfig/config) и планирование по родной
+        задержке кадра. Поэтому вкладки больше не виснут.
+        """
+        try:
+            st = self._fun_anim[which]
+        except Exception:
+            return
+        if not self.cfg.get("silly_mode") or not self._fun_visible:
+            st["after"] = None
+            return
+        try:
+            self._fun_consume_chunks()
+        except Exception:
+            pass
+        delay = FUNNY_MIN_TICK
+        try:
+            key = st.get("key")
+            ent = self._fun_cache.get(key) if key else None
+            n = len(ent["photos"]) if ent else 0
+            if n:
+                nxt = (st.get("shown", -1) + 1) % n
+                photo = self._fun_cached_photo(key, nxt)
+                if photo is None:
+                    self._fun_request(key)
+                else:
+                    if which == "tv" and self._fun_screen_item is not None:
+                        self.fun_tv_canvas.itemconfig(
+                            self._fun_screen_item, image=photo)
+                    elif which == "bg":
+                        self.fun_bg_lbl.config(image=photo)
+                    st["shown"] = nxt
+                    try:
+                        delay = max(FUNNY_MIN_TICK, int(ent["delays"][nxt]))
+                    except Exception:
+                        delay = FUNNY_MIN_TICK
+            elif key:
+                self._fun_request(key)
+        except Exception:
+            pass
+        try:
+            st["after"] = self.root.after(delay, self._tick_cb(which))
+        except Exception:
+            st["after"] = None
+
+    def _tick_cb(self, which):
+        return lambda: self._fun_tick(which)
+
+    def _fun_next_variant(self, base):
+        """Следующая вариация базы ('excellent' -> 'excellent#1'), по кругу."""
+        try:
+            n = len(FUNNY_GIFS[base])
+        except Exception:
+            return f"{base}#0"
+        try:
+            i = (self._fun_variant_idx.get(base, -1) + 1) % max(1, n)
+        except Exception:
+            i = 0
+        try:
+            self._fun_variant_idx[base] = i
+        except Exception:
+            pass
+        return f"{base}#{i}"
+
+    def _fun_play(self, which, key):
+        """Поставить гифку key (база) на слот tv/bg.
+
+        Вариации _2 ротируются: каждый переход на базу показывает следующую.
+        Показ начинается, как только воркер отдаст первые кадры (декод идёт
+        в фоне, интерфейс не виснет); до готовности — предыдущая картинка.
+        """
+        try:
+            st = self._fun_anim[which]
+        except Exception:
+            return
+        if st.get("base") == key and st.get("after") is not None:
+            return
+        self._fun_stop_slot(which)
+        concrete = self._fun_next_variant(key)
+        st["key"] = concrete
+        st["base"] = key
+        st["shown"] = -1
+        self._fun_request(concrete)
+        try:
+            st["after"] = self.root.after(FUNNY_MIN_TICK, self._tick_cb(which))
+        except Exception:
+            st["after"] = None
+
+    def _fun_show_tv(self, key):
+        try:
+            self._fun_play("tv", key)
+        except Exception:
+            pass
+
+    def _fun_stop(self):
+        for st in getattr(self, "_fun_anim", {}).values():
+            try:
+                if st.get("after") is not None:
+                    try:
+                        self.root.after_cancel(st["after"])
+                    except Exception:
+                        pass
+                st["after"] = None
+                st["key"] = None
+                st["shown"] = -1
+            except Exception:
+                pass
+        # поколения вперёд — воркер бросит недодекодированное
+        try:
+            for k in list(getattr(self, "_fun_keygen", {})):
+                self._fun_keygen[k] = self._fun_keygen.get(k, 0) + 1
+        except Exception:
+            pass
+        try:
+            self._fun_loading.clear()
+        except Exception:
+            pass
+        # слить очередь результатов, чтобы не копилось старье
+        try:
+            if self._fun_worker is not None:
+                try:
+                    while True:
+                        self._fun_worker.results.get_nowait()
+                except queue.Empty:
+                    pass
+        except Exception:
+            pass
+        # освободить готовые кадры
+        try:
+            self._fun_cache.clear()
+        except Exception:
+            pass
+        try:
+            self._fun_tv_img = None
+            self._fun_tv_item = None
+            self._fun_screen_item = None
+            self._fun_blank = None
+        except Exception:
+            pass
+
+    def _set_app_icon(self, silly):
+        """Иконка приложения: silly — кропнутый квадрат, иначе обычная.
+
+        Кроп обязателен: исходник — широкая панорама, в таскбаре она
+        сплющивалась в неузнаваемое. Для таскбара/alt-tab ставим .ico через
+        iconbitmap (его Windows точно показывает), для окон Tk — iconphoto.
+        """
+        try:
+            if silly:
+                ico = ensure_silly_ico()
+                if ico:
+                    try:
+                        self.root.iconbitmap(ico)
+                    except Exception:
+                        pass
+                try:
+                    w, h, rgba = _read_png_rgba(
+                        os.path.join(FUNNY_DIR, "icon_silly.png"))
+                    s, sq = _crop_center_square(w, h, rgba)
+                    # ужасть до ~64: иконке больше не надо, put — мгновенно.
+                    # Альфу сплющиваем на чёрном (у PhotoImage нет per-pixel alpha).
+                    t = 64
+                    step = max(1, s // t)
+                    tw = (s + step - 1) // step
+                    th = tw
+                    img = tk.PhotoImage(width=tw, height=th)
+                    rows = []
+                    for y in range(th):
+                        gy = min(s - 1, y * step)
+                        cells = []
+                        for x in range(tw):
+                            gx = min(s - 1, x * step)
+                            o = (gy * s + gx) * 4
+                            a = sq[o + 3]
+                            if a >= 255:
+                                r, g, b = sq[o], sq[o + 1], sq[o + 2]
+                            elif a <= 0:
+                                r = g = b = 0
+                            else:
+                                r = (sq[o] * a) // 255
+                                g = (sq[o + 1] * a) // 255
+                                b = (sq[o + 2] * a) // 255
+                            cells.append("#%02x%02x%02x" % (r, g, b))
+                        rows.append("{" + " ".join(cells) + "}")
+                    img.put(" ".join(rows))
+                    self._silly_icon = img  # держать ссылку!
+                    self.root.iconphoto(True, img)
+                except Exception:
+                    pass
+            else:
+                self._silly_icon = None
+                try:
+                    _ico = os.path.join(BASE_DIR, "assets", "icon.ico")
+                    if os.path.exists(_ico):
+                        self.root.iconbitmap(_ico)
+                except Exception:
+                    pass
+                if hasattr(self.root, "_icon_img"):
+                    try:
+                        self.root.iconphoto(True, self.root._icon_img)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def apply_silly_mode(self):
+        """Показать/спрятать смешной уголок + сменить иконку."""
+        on = bool(self.cfg.get("silly_mode"))
+        if on:
+            need = ["tv_ts_screen.png", "icon_silly.png", "bg_g.gif", "idle_gif.gif"]
+            missing = [f for f in need
+                       if not os.path.exists(os.path.join(FUNNY_DIR, f))]
+            if missing:
+                self.cfg["silly_mode"] = False
+                save_config(self.cfg)
+                try:
+                    self.silly_var.set(False)
+                except Exception:
+                    pass
+                self.dlg_error("Смешная опция: нет файлов: " + ", ".join(missing))
+                on = False
+        try:
+            if on:
+                # фоновый декодер (один на всё время)
+                if self._fun_worker is None:
+                    try:
+                        self._fun_worker = _FunWorker(
+                            lambda k: self._fun_keygen.get(k, 0))
+                    except Exception as e:
+                        log_action(f"Смешная опция: без фонового декода: {e}",
+                                   "error")
+                        self._fun_worker = None
+                if self._fun_worker is None:
+                    self.cfg["silly_mode"] = False
+                    save_config(self.cfg)
+                    try:
+                        self.silly_var.set(False)
+                    except Exception:
+                        pass
+                    self.dlg_error("Смешная опция: не запустился фоновый поток")
+                    on = False
+                self._fun_overlay_show()
+                try:
+                    self.fun_bg_lbl.pack(fill="x", pady=(0, 8),
+                                         before=self.res_frame)
+                except Exception:
+                    try:
+                        self.fun_bg_lbl.pack(fill="x", pady=(0, 8))
+                    except Exception:
+                        pass
+                self._fun_visible = True
+                if self._fun_tv_item is None:
+                    try:
+                        self.fun_tv_canvas.delete("all")
+                    except Exception:
+                        pass
+                    # СНАЧАЛА задний слой (гифка экрана), ПОТОМ телик поверх:
+                    # прозрачный экран покажет гифку, безель обрежет вылезающее.
+                    # Заглушка 1x1 — настоящий кадр встанет первым тиком.
+                    try:
+                        self._fun_blank = tk.PhotoImage(width=1, height=1)
+                        self._fun_screen_item = self.fun_tv_canvas.create_image(
+                            FUNNY_SCREEN_CX, FUNNY_SCREEN_CY, anchor="center",
+                            image=self._fun_blank)
+                    except Exception as e:
+                        log_action(f"Смешная опция: канвас: {e}", "error")
+                        self._fun_screen_item = None
+                    tv_path = os.path.join(FUNNY_DIR, "tv_ts_screen.png")
+                    base = tk.PhotoImage(file=tv_path)
+                    try:
+                        self._fun_tv_img = base.subsample(FUNNY_TV_SUB, FUNNY_TV_SUB)
+                    except Exception:
+                        self._fun_tv_img = base
+                    self._fun_tv_item = self.fun_tv_canvas.create_image(
+                        0, 0, anchor="nw", image=self._fun_tv_img)
+                    try:
+                        # телик строго поверх гифки
+                        self.fun_tv_canvas.tag_raise(self._fun_tv_item,
+                                                     self._fun_screen_item)
+                    except Exception:
+                        pass
+                self._fun_play("bg", "bg")
+                self._fun_show_tv("idle")
+                # прогрев: заказать декод всех гифок (включая _2-варианты)
+                # заранее, чтобы во время проверки они показывались сразу
+                try:
+                    for k in _fun_all_concrete():
+                        self._fun_request(k)
+                except Exception:
+                    pass
+                self._set_app_icon(True)
+                log_action("Смешная опция ВКЛ: телик + фон + silly-иконка")
+            else:
+                self._fun_stop()
+                self._fun_overlay_hide()
+                try:
+                    self.fun_bg_lbl.pack_forget()
+                except Exception:
+                    pass
+                self._fun_visible = False
+                self._set_app_icon(False)
+        except Exception as e:
+            log_action(f"Смешная опция: {e}", "error")
+
+    def on_silly_toggle(self):
+        on = bool(self.silly_var.get())
+        self.cfg["silly_mode"] = on
+        save_config(self.cfg)
+        log_action(f"Смешная опция: {'ВКЛ' if on else 'ВЫКЛ'}")
+        self.apply_silly_mode()
+        self.msg_q.put(("actions_refresh", None))
+
     # ================= Resource Monitor =================
     def start_resource_monitor(self):
-        """Start periodic resource usage updates"""
+        """Периодический замер РЕАЛЬНЫХ ресурсов процесса (только stdlib+ctypes).
+
+        Раньше использовался модуль wmi (не входит в stdlib) — импорт всегда
+        падал и виджеты вечно показывали «—%». Теперь CPU/RAM меряются через
+        WinAPI напрямую: GetSystemTimes/GetProcessTimes (CPU) и
+        GetProcessMemoryInfo (RAM процесса). Без консолей и дочерних процессов.
+        """
+        self._res_prev = None
+        self._res_gpu_name = None
         self._update_resources()
-        
+
+    def _res_gpu_display_name(self):
+        """Имя видеоадаптера из реестра (один раз, кэш). Нагрузку GPU через
+        stdlib честно не получить — показываем имя, а не выдуманные проценты."""
+        if self._res_gpu_name is not None:
+            return self._res_gpu_name
+        name = ""
+        try:
+            if winreg is not None:
+                base = (r"SYSTEM\CurrentControlSet\Control\Class"
+                        r"\{4d36e968-e325-11ce-bfc1-08002be10318}")
+                try:
+                    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, base) as k:
+                        i = 0
+                        while True:
+                            try:
+                                sub = winreg.EnumKey(k, i)
+                            except OSError:
+                                break
+                            i += 1
+                            if not sub.isdigit():
+                                continue
+                            try:
+                                with winreg.OpenKey(k, sub) as sk:
+                                    desc, _ = winreg.QueryValueEx(sk, "DriverDesc")
+                                    desc = (desc or "").strip()
+                                    if desc and desc not in name:
+                                        name = (name + " / " + desc) if name else desc
+                            except Exception:
+                                continue
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        self._res_gpu_name = name
+        return name
+
+    @staticmethod
+    def _ft_to_int(ft):
+        try:
+            return (int(ft.dwHighDateTime) << 32) | int(ft.dwLowDateTime)
+        except Exception:
+            return 0
+
     def _update_resources(self):
         try:
-            import wmi
-            c = wmi.WMI()
-            # CPU
-            for cpu in c.Win32_Processor():
-                load = cpu.LoadPercentage
-                if load is not None:
-                    self.res_cpu.config(text=f"CPU: {load}%")
-                    break
-            else:
-                self.res_cpu.config(text="CPU: —%")
-            # RAM
-            for os_info in c.Win32_OperatingSystem():
-                total = int(os_info.TotalVisibleMemorySize) * 1024
-                free = int(os_info.FreePhysicalMemory) * 1024
-                used = total - free
-                # Get process memory
-                import os
-                import subprocess
-                try:
-                    pid = os.getpid()
-                    out = subprocess.check_output(f'wmic process where ProcessId={pid} get WorkingSetSize', shell=True).decode()
-                    lines = out.strip().split('\n')
-                    if len(lines) > 1:
-                        wss = int(lines[1].strip()) / 1024 / 1024
-                        self.res_ram.config(text=f"RAM: {wss:.0f} MB")
-                    else:
-                        self.res_ram.config(text=f"RAM: {used/1024/1024:.0f} MB (sys)")
-                except Exception:
-                    self.res_ram.config(text=f"RAM: {used/1024/1024:.0f} MB (sys)")
-                break
-            # GPU
-            for gpu in c.Win32_VideoController():
-                if gpu.Name:
-                    self.res_gpu.config(text=f"GPU: {gpu.Name[:20]}")
-                    break
-            else:
-                self.res_gpu.config(text="GPU: N/A")
+            if not self.root.winfo_exists():
+                return
         except Exception:
-            self.res_cpu.config(text="CPU: —%")
-            self.res_ram.config(text="RAM: — MB")
-            self.res_gpu.config(text="GPU: —%")
-        # Schedule next update
-        self.root.after(5000, self._update_resources)
+            return
+        try:
+            if os.name != "nt":
+                raise RuntimeError("non-windows")
+            import ctypes as _ct
+            from ctypes import wintypes as _wt
+            k32 = _ct.windll.kernel32
+            psapi = _ct.windll.psapi
+
+            class _PMC(_ct.Structure):
+                _fields_ = [("cb", _wt.DWORD),
+                            ("PageFaultCount", _wt.DWORD),
+                            ("PeakWorkingSetSize", _ct.c_size_t),
+                            ("WorkingSetSize", _ct.c_size_t),
+                            ("QuotaPeakPagedPoolUsage", _ct.c_size_t),
+                            ("QuotaPagedPoolUsage", _ct.c_size_t),
+                            ("QuotaPeakNonPagedPoolUsage", _ct.c_size_t),
+                            ("QuotaNonPagedPoolUsage", _ct.c_size_t),
+                            ("PagefileUsage", _ct.c_size_t),
+                            ("PeakPagefileUsage", _ct.c_size_t)]
+
+            k32.GetCurrentProcess.argtypes = []
+            k32.GetCurrentProcess.restype = _wt.HANDLE
+            try:
+                psapi.GetProcessMemoryInfo.argtypes = [_wt.HANDLE,
+                                                       _ct.c_void_p,
+                                                       _wt.DWORD]
+                psapi.GetProcessMemoryInfo.restype = _wt.BOOL
+            except Exception:
+                pass
+            hproc = k32.GetCurrentProcess()
+            # --- RAM процесса ---
+            pmc = _PMC()
+            pmc.cb = _ct.sizeof(pmc)
+            ram_mb = None
+            try:
+                if psapi.GetProcessMemoryInfo(hproc, _ct.byref(pmc), pmc.cb):
+                    ram_mb = pmc.WorkingSetSize / 1024 / 1024
+            except Exception:
+                ram_mb = None
+            # --- CPU: системный (GetSystemTimes) + процесса (GetProcessTimes) ---
+            k32.GetSystemTimes.argtypes = [_ct.POINTER(_wt.FILETIME)] * 3
+            k32.GetSystemTimes.restype = _wt.BOOL
+            k32.GetProcessTimes.argtypes = [_wt.HANDLE,
+                                            _ct.POINTER(_wt.FILETIME),
+                                            _ct.POINTER(_wt.FILETIME),
+                                            _ct.POINTER(_wt.FILETIME),
+                                            _ct.POINTER(_wt.FILETIME)]
+            k32.GetProcessTimes.restype = _wt.BOOL
+            idle, sk, su = _wt.FILETIME(), _wt.FILETIME(), _wt.FILETIME()
+            c1, e1, pk, pu = (_wt.FILETIME(), _wt.FILETIME(),
+                              _wt.FILETIME(), _wt.FILETIME())
+            if not k32.GetSystemTimes(_ct.byref(idle), _ct.byref(sk), _ct.byref(su)):
+                raise RuntimeError("GetSystemTimes failed")
+            if not k32.GetProcessTimes(hproc, _ct.byref(c1), _ct.byref(e1),
+                                       _ct.byref(pk), _ct.byref(pu)):
+                raise RuntimeError("GetProcessTimes failed")
+            now_wall = time.perf_counter()
+            cur = {"idle": self._ft_to_int(idle),
+                   "sys": self._ft_to_int(sk) + self._ft_to_int(su),
+                   "proc": self._ft_to_int(pk) + self._ft_to_int(pu),
+                   "wall": now_wall}
+            prev = self._res_prev
+            self._res_prev = cur
+            if prev is not None:
+                sys_delta = cur["sys"] - prev["sys"]          # 100-нс
+                idle_delta = cur["idle"] - prev["idle"]       # 100-нс
+                proc_delta = cur["proc"] - prev["proc"]       # 100-нс
+                wall_delta = cur["wall"] - prev["wall"]       # сек
+                ncpu = os.cpu_count() or 1
+                sys_pct = None
+                if sys_delta > 0:
+                    sys_pct = max(0.0, min(100.0, (sys_delta - idle_delta) * 100.0 / sys_delta))
+                proc_pct = None
+                if wall_delta > 0 and proc_delta >= 0:
+                    proc_pct = max(0.0, min(100.0, (proc_delta / 1e7) * 100.0 / (wall_delta * ncpu)))
+                if sys_pct is None and proc_pct is None:
+                    self.res_cpu.config(text="CPU: …")
+                elif proc_pct is None:
+                    self.res_cpu.config(text=f"CPU: {sys_pct:.0f}%")
+                elif sys_pct is None:
+                    self.res_cpu.config(text=f"CPU app: {proc_pct:.1f}%")
+                else:
+                    self.res_cpu.config(text=f"CPU: {sys_pct:.0f}% • app {proc_pct:.1f}%")
+            else:
+                self.res_cpu.config(text="CPU: …")
+            if ram_mb is not None:
+                self.res_ram.config(text=f"RAM: {ram_mb:.0f} МБ")
+            else:
+                self.res_ram.config(text="RAM: —")
+            gname = self._res_gpu_display_name()
+            if gname:
+                self.res_gpu.config(text=f"GPU: {gname[:24]}")
+            else:
+                self.res_gpu.config(text="GPU: н/д")
+        except Exception:
+            try:
+                self.res_cpu.config(text="CPU: —")
+                self.res_ram.config(text="RAM: —")
+                self.res_gpu.config(text="GPU: н/д")
+            except Exception:
+                pass
+        # следующий замер через 2 с
+        try:
+            self.root.after(2000, self._update_resources)
+        except Exception:
+            pass
 
     def get_game_filter_status(self):
         """Read game_filter.enabled and return (enabled, mode_text)"""
@@ -3746,6 +5155,16 @@ class ZapretApp:
             # Update checkbox to reflect state (checked if any mode enabled)
             self.game_filter_var.set(bool(next_mode))
             log_action(f"Game Filter: {next_mode or 'disabled'}")
+            # сразу показать активный вариант на кнопке (не ждать следующего refresh)
+            try:
+                self._update_toggles()
+            except Exception:
+                pass
+            try:
+                mode_txt = {"all": "TCP+UDP", "tcp": "TCP", "udp": "UDP"}.get(next_mode, "Выкл")
+                self.msg_q.put(("toast", ("Game Filter", f"Теперь: {mode_txt}", GREEN)))
+            except Exception:
+                pass
         except Exception as e:
             log_action(f"Game Filter toggle error: {e}", "error")
 
@@ -3784,6 +5203,16 @@ class ZapretApp:
             
             self.ipset_filter_var.set(new_status != "any")
             log_action(f"IPSet Filter: {new_status}")
+            # сразу показать активный вариант на кнопке (не ждать следующего refresh)
+            try:
+                self._update_toggles()
+            except Exception:
+                pass
+            try:
+                txt = {"loaded": "Загружен", "none": "Минимум", "any": "Все"}.get(new_status, new_status)
+                self.msg_q.put(("toast", ("IPSet Filter", f"Теперь: {txt}", GREEN)))
+            except Exception:
+                pass
         except Exception as e:
             log_action(f"IPSet Filter toggle error: {e}", "error")
 
@@ -4003,16 +5432,43 @@ class ZapretApp:
         stop_winws()
         time.sleep(0.5)
         ok = start_winws_hidden(self.cfg["zapret_root"], bat)
-        time.sleep(2)
-        running = winws_running()
+        running = wait_winws_alive(6.0)
+        if not (ok and running) and is_admin():
+            # боевой запуск не оставил процесса — узнать настоящую причину
+            # пробником (перехват вывода), а не гадать про администратора.
+            # Без админа и так всё ясно — пробник не запускаем.
+            try:
+                diag = winws_probe_output(self.cfg["zapret_root"], bat)
+            except Exception as e:
+                diag = str(e)
+            if diag.startswith("<процесс жив"):
+                # пробник жив: старт в принципе работает (первый был
+                # медленным/транзиентным) — повторяем боевой один раз
+                log_action(f"Разовый запуск {bat}: пробник жив, повторяю",
+                           "apply")
+                stop_winws()
+                time.sleep(0.5)
+                ok = start_winws_hidden(self.cfg["zapret_root"], bat)
+                running = wait_winws_alive(6.0)
         if ok and running:
             self.cfg["active_config"] = bat
             save_config(self.cfg)
             msg = f"{bat} запущен (без автозагрузки)"
             log_action(f"Вручную запущен конфиг без службы: {bat}", "apply")
         else:
-            msg = f"{bat}: не запустился (нужны права администратора?)"
-            log_action(f"Ошибка разового запуска {bat}", "error")
+            try:
+                diag
+            except NameError:
+                diag = ""
+            if not is_admin():
+                msg = (f"{bat}: не запустился — нужны права администратора "
+                       f"(запустите через run.bat)")
+            elif diag:
+                msg = f"{bat}: не запустился: {diag[:220]}"
+            else:
+                msg = f"{bat}: не запустился (см. журнал действий)"
+            log_action(f"Ошибка разового запуска {bat}: {(diag or '')[:400]}",
+                       "error")
         self.msg_q.put(("toast", ("Разовый запуск", msg, GREEN if ok and running else RED)))
         self.root.after(500, self.refresh_active_bar)
         self.msg_q.put(("actions_refresh", None))
@@ -4050,13 +5506,26 @@ class ZapretApp:
         o.grid(row=0, column=0, sticky="ew", pady=(0, 12))
         row = tk.Frame(top, bg=CARD)
         row.pack(fill="x", padx=16, pady=12)
-        self.dom_hint = tk.Label(row, text="Списки из папки lists/ — галочка = включен",
+        self.dom_hint = tk.Label(row, text="Зелёный = включён, красный = выключен",
                                  bg=CARD, fg=MUTED, font=(FONT, 9))
         self.dom_hint.pack(side="left")
         RButton(row, text="🔄 Обновить", style="ghost",
                    command=self.refresh_domains_list).pack(side="right", padx=(6, 0))
         RButton(row, text="💾 Сохранить", style="accent",
                    command=self.save_domain_file).pack(side="right")
+        # вкл/выкл — отдельными кнопками ПОСЛЕ выбора списка (клик по
+        # названию только выбирает для просмотра и НЕ переключает состояние)
+        trow = tk.Frame(top, bg=CARD)
+        trow.pack(fill="x", padx=16, pady=(0, 12))
+        self.dom_on_btn = RButton(trow, text="✅ Включить", style="ghost",
+                                  command=lambda: self._set_selected_list_enabled(True))
+        self.dom_off_btn = RButton(trow, text="⛔ Выключить", style="ghost",
+                                   command=lambda: self._set_selected_list_enabled(False))
+        self.dom_on_btn.pack(side="left", padx=(0, 8))
+        self.dom_off_btn.pack(side="left")
+        self.dom_state_lbl = tk.Label(trow, text="Список не выбран", bg=CARD,
+                                      fg=MUTED, font=(FONT, 9))
+        self.dom_state_lbl.pack(side="left", padx=(12, 0))
         mid = tk.Frame(p, bg=BG)
         mid.grid(row=1, column=0, sticky="nsew")
         mid.columnconfigure(0, weight=1)
@@ -4069,8 +5538,10 @@ class ZapretApp:
         self.dom_scroll = ScrollFrame(l, bg=CARD)
         self.dom_scroll.pack(fill="both", expand=True, padx=12, pady=(0, 12))
         self.dom_items_frame = self.dom_scroll.inner
-        self.dom_vars = {}  # base_name -> BooleanVar
+        self.dom_vars = {}  # оставлено для совместимости (чекбоксов больше нет)
         self.dom_row_frames = {}  # base_name -> frame
+        self.dom_row_labels = {}  # base_name -> Label (зелёный/красный)
+        self._dom_selected = ""  # выбранный для просмотра список
         o2, r = self.card(mid)
         o2.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
         self.dom_title = tk.Label(r, text="Содержимое", bg=CARD, fg=TEXT, font=(FONT, 11, "bold"))
@@ -4091,6 +5562,36 @@ class ZapretApp:
             return fname[:-9]
         return fname
 
+    def _collect_list_files(self):
+        """base -> (fname, disabled). Возвращает отсортированный dict."""
+        all_files = {}
+        d = self._lists_dir()
+        if not d:
+            return all_files
+        for fp in glob.glob(os.path.join(d, "*.txt")):
+            fname = os.path.basename(fp)
+            base = self._get_base_name(fname)
+            disabled = self._is_disabled(fname)
+            if base not in all_files:
+                all_files[base] = (fname, disabled)
+            elif disabled and not all_files[base][1]:
+                # .disabled важнее: именно он отражает выключенное состояние
+                all_files[base] = (fname, disabled)
+        for fp in glob.glob(os.path.join(d, "*.txt.disabled")):
+            fname = os.path.basename(fp)
+            base = self._get_base_name(fname)
+            all_files[base] = (fname, True)
+        return all_files
+
+    def _is_list_enabled(self, base):
+        """Актуальное состояние по файловой системе (не по виджетам)."""
+        d = self._lists_dir()
+        if not d:
+            return False
+        if os.path.exists(os.path.join(d, base + ".disabled")):
+            return False
+        return os.path.exists(os.path.join(d, base))
+
     def refresh_domains_list(self):
         try:
             # Clear existing widgets
@@ -4098,97 +5599,122 @@ class ZapretApp:
                 w.destroy()
             self.dom_vars.clear()
             self.dom_row_frames.clear()
+            self.dom_row_labels.clear()
 
             d = self._lists_dir()
             if not d:
                 self.dom_hint.config(text="Папка lists/ не найдена — проверьте корневую папку в Настройках")
+                try:
+                    self.dom_state_lbl.config(text="Список не выбран", fg=MUTED)
+                except Exception:
+                    pass
                 return
 
-            # Get both .txt and .txt.disabled files
-            all_files = {}
-            for fp in glob.glob(os.path.join(d, "*.txt")):
-                fname = os.path.basename(fp)
-                base = self._get_base_name(fname)
-                disabled = self._is_disabled(fname)
-                if base not in all_files or (disabled and not all_files[base][1]):
-                    all_files[base] = (fname, disabled)
-            for fp in glob.glob(os.path.join(d, "*.txt.disabled")):
-                fname = os.path.basename(fp)
-                base = self._get_base_name(fname)
-                disabled = True
-                if base not in all_files or disabled:
-                    all_files[base] = (fname, disabled)
-
+            all_files = self._collect_list_files()
             self.dom_hint.config(text=f"Списки из {d} — изменения вступят в силу после перезапуска zapret")
 
             for base in sorted(all_files.keys()):
                 fname, disabled = all_files[base]
                 self._create_list_row(base, fname, disabled)
 
-            # Select first item
-            if all_files:
-                first_base = sorted(all_files.keys())[0]
-                self._select_list(first_base)
+            # восстановить выбор (или первый), но НЕ переключать состояние
+            keep = getattr(self, "_dom_selected", "")
+            if keep in all_files:
+                self._select_list(keep)
+            elif all_files:
+                self._select_list(sorted(all_files.keys())[0])
+            else:
+                try:
+                    self.dom_state_lbl.config(text="Список не выбран", fg=MUTED)
+                except Exception:
+                    pass
         except Exception:
             pass
 
     def _create_list_row(self, base, fname, disabled):
-        """Create a row with checkbox for a list file"""
+        """Строка списка: обычная подпись (НЕ чекбокс).
+
+        Зелёная — включён, красная — выключен. Клик только ВЫБИРАЕТ список
+        для просмотра/редактирования справа; вкл/выкл — кнопками
+        «✅ Включить» / «⛔ Выключить» после выбора.
+        """
         row = tk.Frame(self.dom_items_frame, bg=CARD)
         row.pack(fill="x", padx=4, pady=2)
         self.dom_row_frames[base] = row
 
-        var = tk.BooleanVar(value=not disabled)
-        self.dom_vars[base] = var
+        fg = GREEN if not disabled else RED
+        lbl = tk.Label(row, text=("● " + base), bg=CARD, fg=fg,
+                       font=(FONT, 10), anchor="w", cursor="hand2")
+        lbl.pack(side="left", fill="x", expand=True, padx=(6, 0), pady=3)
+        self.dom_row_labels[base] = lbl
 
-        cb = tk.Checkbutton(row, text=base, variable=var, bg=CARD, fg=TEXT,
-                            font=(FONT, 9), anchor="w", activebackground=CARD,
-                            selectcolor=CARD2, command=lambda b=base: self._on_checkbox_change(b))
-        cb.pack(side="left", fill="x", expand=True)
-
-        # Click on row also selects for editing
-        for w in (row, cb):
+        for w in (row, lbl):
             w.bind("<Button-1>", lambda e, b=base: self._select_list(b), add="+")
+            w.bind("<Enter>", lambda e, b=base: self._on_list_hover(b, True), add="+")
+            w.bind("<Leave>", lambda e, b=base: self._on_list_hover(b, False), add="+")
 
-    def _on_checkbox_change(self, base):
-        """Handle checkbox toggle"""
-        var = self.dom_vars.get(base)
-        if var is None:
+    def _on_list_hover(self, base, inside):
+        """Лёгкая подсветка при наведении (выбранная строка не трогаем)."""
+        try:
+            if getattr(self, "_dom_selected", "") == base:
+                return
+            frame = self.dom_row_frames.get(base)
+            if frame is None:
+                return
+            bg = CARD2 if inside else CARD
+            frame.configure(bg=bg)
+            lbl = self.dom_row_labels.get(base)
+            if lbl is not None:
+                lbl.configure(bg=bg)
+        except Exception:
+            pass
+
+    def _set_selected_list_enabled(self, enable):
+        """Включить/выключить ВЫБРАННЫЙ список (кнопки под шапкой)."""
+        base = getattr(self, "_dom_selected", "")
+        if not base:
+            self.dlg_info("Сначала выберите список слева")
             return
-        enabled = var.get()
         d = self._lists_dir()
         if not d:
             return
-        # Determine current real filename
         disabled_path = os.path.join(d, base + ".disabled")
         enabled_path = os.path.join(d, base)
-        if enabled:
-            # Enable: rename .disabled -> base
-            if os.path.exists(disabled_path):
-                os.rename(disabled_path, enabled_path)
-                log_action(f"Список включён: {base}", "lists")
-        else:
-            # Disable: rename base -> .disabled
-            if os.path.exists(enabled_path):
-                os.rename(enabled_path, disabled_path)
-                log_action(f"Список выключен: {base}", "lists")
-        # Refresh to update UI
+        try:
+            if enable:
+                if os.path.exists(disabled_path):
+                    os.rename(disabled_path, enabled_path)
+                    log_action(f"Список включён: {base}", "lists")
+                else:
+                    self.dlg_info(f"«{base}» уже включён")
+                    return
+            else:
+                if os.path.exists(enabled_path):
+                    os.rename(enabled_path, disabled_path)
+                    log_action(f"Список выключен: {base}", "lists")
+                else:
+                    self.dlg_info(f"«{base}» уже выключен")
+                    return
+        except Exception as e:
+            self.dlg_error(f"Не удалось переключить {base}: {e}")
+            return
         self.refresh_domains_list()
-        self._select_list(base)
 
     def _select_list(self, base):
-        """Select a list for editing in the right panel"""
+        """Выбрать список для просмотра/редактирования. Состояние НЕ меняет."""
+        self._dom_selected = base
         # Highlight selected row
         for b, frame in self.dom_row_frames.items():
             try:
+                lbl = self.dom_row_labels.get(b)
                 if b == base:
                     frame.configure(bg=ACCENT_DEEP)
-                    for child in frame.winfo_children():
-                        child.configure(bg=ACCENT_DEEP)
+                    if lbl is not None:
+                        lbl.configure(bg=ACCENT_DEEP)
                 else:
                     frame.configure(bg=CARD)
-                    for child in frame.winfo_children():
-                        child.configure(bg=CARD)
+                    if lbl is not None:
+                        lbl.configure(bg=CARD)
             except Exception:
                 pass
 
@@ -4196,14 +5722,26 @@ class ZapretApp:
         d = self._lists_dir()
         if not d:
             return
-        real_name = base + ".disabled" if os.path.exists(os.path.join(d, base + ".disabled")) else base
+        enabled = self._is_list_enabled(base)
+        real_name = base if enabled else (base + ".disabled")
         fp = os.path.join(d, real_name)
         self._dom_current = fp
+        try:
+            state_txt = "включён" if enabled else "выключен"
+            state_col = GREEN if enabled else RED
+            self.dom_state_lbl.config(text=f"{base}: {state_txt}", fg=state_col)
+            try:
+                self.dom_on_btn.set_enabled(not enabled)
+                self.dom_off_btn.set_enabled(enabled)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
         try:
             with open(fp, "r", encoding="utf-8", errors="ignore") as f:
                 content = f.read()
-            status = " [OFF]" if real_name.endswith(".disabled") else " [ON]"
+            status = " [ВЫКЛ]" if not enabled else " [ВКЛ]"
             self.dom_title.config(
                 text=f"{real_name}  ({len(content.splitlines())} строк, {len(content)} симв.){status}")
             self.dom_text.delete("1.0", "end")
@@ -4563,6 +6101,12 @@ class ZapretApp:
         RButton(fnt, text="↻ Перезапустить программу", style="accent",
                    command=self.restart_app).grid(row=4, column=0, pady=8, sticky="w")
         self.root.after(100, self._fill_font_boxes)
+        self.silly_var = tk.BooleanVar(value=bool(self.cfg.get("silly_mode", False)))
+        self.silly_check = tk.Checkbutton(inner, text="Funny option",
+                                          variable=self.silly_var, bg=CARD, fg=TEXT, font=(FONT, 10),
+                                          activebackground=CARD, selectcolor=CARD2,
+                                          command=self.on_silly_toggle)
+        self.silly_check.pack(anchor="w", padx=8, pady=(10, 2))
 
     def _build_set_app(self):
         inner = self._set_scroll(self.set_pages["app"])
@@ -4578,7 +6122,7 @@ class ZapretApp:
                    command=self.on_make_shortcut).pack(anchor="w", padx=8, pady=(0, 8))
         RButton(inner, text="🔄 Обновить кэш иконок Windows", style="ghost",
                    command=self.on_refresh_icons).pack(anchor="w", padx=8, pady=(0, 8))
-        tk.Label(inner, text=f"{APP_NAME} v{APP_VERSION} • только стандартная библиотека • ~20 МБ RAM\n"
+        tk.Label(inner, text=f"{APP_NAME} v{APP_VERSION} • только стандартная библиотека\n"
                              "Ручная проверка: турбо (максимум потоков + приоритет).\n"
                              "Автомониторинг: эко (3 потока, фоновый приоритет, сон между проверками).",
                  bg=CARD, fg=MUTED, font=(FONT, 9), justify="left").pack(anchor="w", padx=8, pady=(8, 4))
@@ -4958,11 +6502,17 @@ class ZapretApp:
     # ---------- static ----------
     def refresh_all_static(self):
         cfgs = list_configs(self.cfg.get("zapret_root", ""))
+        # сохранить галочки пользователя (иначе обновление списка во время
+        # проверки сбрасывало бы выбор и казалось, что «окно конфигов пропало»)
+        try:
+            prev_sel = {k: bool(v.get()) for k, v in self.cfg_vars.items()}
+        except Exception:
+            prev_sel = {}
         for w in self.cfg_checks.winfo_children():
             w.destroy()
         self.cfg_vars = {}
         for bat in cfgs:
-            v = tk.BooleanVar(value=True)
+            v = tk.BooleanVar(value=prev_sel.get(bat, True))
             self.cfg_vars[bat] = v
             row = tk.Frame(self.cfg_checks, bg=CARD)
             row.pack(fill="x", anchor="w")
@@ -5056,7 +6606,7 @@ class ZapretApp:
             log_action(f"Автопереключение не удалось ({nxt}): {m}", "error")
             self.msg_q.put(("toast", ("⚠ Не удалось переключить",
                                       f"{nxt}: {m}", RED)))
-        self.root.after(500, self.refresh_choose)
+        self.root.after(500, self.refresh_active_bar)
         self.msg_q.put(("actions_refresh", None))
 
 
