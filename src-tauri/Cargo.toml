@@ -1,0 +1,28 @@
+[package]
+name = "zapret-manager"
+version = "2.0.0"
+description = "Панель управления zapret-discord-youtube (Tauri 2)"
+edition = "2021"
+rust-version = "1.77"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "sync", "fs"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "json"] }
+sysinfo = "0.36"
+tauri-plugin-single-instance = "2"
+tauri-plugin-window-state = "2"
+tauri-plugin-updater = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+sha2 = "0.10"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"

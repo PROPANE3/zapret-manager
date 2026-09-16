@@ -1,11 +1,11 @@
-# личные данные и кэш — не в репозиторий
+# Rust / Tauri build
+/src-tauri/target/
+src-tauri/gen/
+*.pdb
+# local runtime data
 data/
-__pycache__/
-*.pyc
-*.pyo
-*.log
-# локальный лаунчер и рантайм — создаются install.bat под конкретный ПК
-zapret-manager.exe
-python3*.dll
-vcruntime*.dll
-pyvenv.cfg
+# OS / IDE
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/

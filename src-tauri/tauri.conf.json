@@ -1,0 +1,51 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Zapret Manager",
+  "version": "2.0.0",
+  "identifier": "com.flowseal.zapretmanager",
+  "build": {
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeDevCommand": "python -m http.server 1420 --directory frontend",
+    "beforeBundleCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File src-tauri\\stamp-manifest.ps1",
+    "frontendDist": "../frontend"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Zapret Manager v2.0.0",
+        "width": 1480,
+        "height": 860,
+        "minWidth": 1000,
+        "minHeight": 640,
+        "center": true,
+        "decorations": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": true,
+    "icon": ["icons/icon.ico", "icons/icon.png"],
+    "resources": ["../assets/funny/*", "../assets/packs/*.zip", "icons/icon.png"],
+    "category": "Utility",
+    "shortDescription": "Панель управления zapret-discord-youtube",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "dialog": false,
+      "endpoints": ["https://github.com/PROPANE3/zapret-manager/releases/latest/download/latest.json"],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZCQ0U2MkNERDZCNjQ0RUIKUldUclJMYld6V0xPKzhlK1M5WHg2THg0Mlc5eUY3RkdITTc0bVM2REU4bTlVUVNuWVFyN1l0bUoK"
+    }
+  }
+}

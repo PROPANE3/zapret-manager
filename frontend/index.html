@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="scarlet">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Zapret Manager v2.0.0</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+  <div class="brick-strip hidden" id="brick-top"></div>
+  <div id="layout">
+  <aside id="sidebar">
+    <div class="brand"><span class="brand-fire">🔥</span><div><div class="brand-title">МЕНЮ</div><div class="brand-sub">DPI bypass control</div></div></div>
+    <div class="sep"></div>
+    <nav id="nav">
+      <button data-page="check" class="active">🔍&nbsp;&nbsp;Проверка</button>
+      <button data-page="domains">🌐&nbsp;&nbsp;Домены</button>
+      <button data-page="logs">📋&nbsp;&nbsp;Логи</button>
+      <button data-page="journal">📝&nbsp;&nbsp;Журнал</button>
+      <button data-page="settings">⚙️&nbsp;&nbsp;Настройки</button>
+    </nav>
+    <div class="side-bottom">
+      <img id="gal-fun" class="side-gal hidden" alt="">
+      <img id="gal-vsd" class="side-gal hidden" alt="">
+      <img id="gal-spam" class="side-gal hidden" alt="">
+      <div id="gal-term-wrap" class="hidden scanlines"><img id="gal-term" alt=""></div>
+      <button id="btn-game-filter" class="btn ghost small-btn" title="Game Filter: цикл Выкл→TCP+UDP→TCP→UDP">🎮 Game Filter: —</button>
+      <button id="btn-ipset-filter" class="btn ghost small-btn" title="IPSet Filter: цикл Загружен→Минимум→Все">🔢 IPSet Filter: —</button>
+      <div id="admin-line" class="muted small"></div>
+      <div class="muted small">v2.0.0 · Tauri</div>
+    </div>
+  </aside>
+  <main id="main">
+    <header id="page-head">
+      <div><h1 id="page-title">Проверка конфигов</h1><div id="page-sub" class="muted">замер пингов Discord и YouTube по каждому конфигу</div></div>
+      <div id="status-pill" class="pill">статус…</div>
+    </header>
+    <div class="hr"></div>
+    <div id="content">
+
+      <section class="page" id="page-check">
+        <div class="card hero">
+          <div class="hero-left">
+            <div class="sect">СЕЙЧАС АКТИВНО</div>
+            <div id="active-name" class="active-name">—</div>
+            <div id="svc-line" class="muted small"></div>
+            <div id="vpn-line" class="muted small"></div>
+            <div id="buddy-line" class="muted small"></div>
+            <div id="res-line" class="muted small"></div>
+            <div id="ping-chips">
+              <span id="ping-ds" class="chip">DS —</span>
+              <span id="ping-yt" class="chip">YT —</span>
+            </div>
+          </div>
+          <div class="hero-right">
+            <button id="btn-apply-sel" class="btn accent">✔ Применить выбранный</button>
+            <button id="btn-restart-svc" class="btn ghost" title="Перезапустить службу или активный конфиг">↻</button>
+            <button id="btn-remove-svc" class="btn ghost" title="Остановить обход и удалить службу">■</button>
+            <button id="btn-diag" class="btn ghost" title="Диагностика: BFE, прокси, WinDivert">🔧</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="btn-row">
+            <button id="btn-check-sel" class="btn accent big">▶&nbsp;&nbsp;ПРОВЕРИТЬ ВЫБРАННЫЕ</button>
+            <button id="btn-check-all" class="btn ghost big">Все</button>
+            <button id="btn-check-active" class="btn ghost big" title="Проверить только активный конфиг">Активный</button>
+            <button id="btn-cancel" class="btn ghost big" disabled>⛔ Отмена</button>
+          </div>
+          <div class="progress"><div id="prog-fill"></div></div>
+          <div id="prog-label" class="muted small">Готов к проверке</div>
+        </div>
+
+        <div class="card">
+          <div class="sect">ПАРАМЕТРЫ ПРОВЕРКИ</div>
+          <div class="param-row">
+            <div class="seg" id="seg-mode">
+              <button data-mode="quick">Быстрый</button><button data-mode="full">Полный</button><button data-mode="ultra">Ультра</button>
+            </div>
+            <label>Повторы <input id="in-repeat" type="number" min="1" max="3" value="1"></label>
+            <label>Макс. пинг, мс <input id="in-thr" type="number" min="100" step="100" value="5000"></label>
+            <label>Потоки <input id="in-workers" type="number" min="2" max="16" value="12"></label>
+            <button id="btn-save-quick" class="btn ghost">💾 Сохранить</button>
+            <button id="btn-strategy" class="btn ghost" title="Конструктор стратегий">🧬 Стратегии</button>
+          </div>
+        </div>
+
+        <div class="cols">
+          <div class="card grow1">
+            <div class="sect">КОНФИГИ</div>
+            <div id="cfg-list"></div>
+          </div>
+          <div class="card grow2">
+            <div class="sect">РЕЗУЛЬТАТЫ</div>
+            <table id="grade-table"><thead><tr><th>Конфиг</th><th>Оценка</th><th>DS</th><th>YT</th><th>Score</th><th></th></tr></thead><tbody></tbody></table>
+            <div class="sect" style="margin-top:14px">ХОД ПРОВЕРКИ</div>
+            <pre id="check-log" class="logbox"></pre>
+          </div>
+        </div>
+      </section>
+
+      <section class="page hidden" id="page-domains">
+        <div class="card">
+          <div class="btn-row">
+            <span class="muted small" id="dom-hint">Клик по строке — просмотр, тумблер — вкл/выкл</span>
+            <span class="spacer"></span>
+            <button id="btn-dom-new" class="btn ghost">＋ Новый</button>
+            <button id="btn-dom-diff" class="btn ghost" title="Что изменилось в списках">📰 Diff</button>
+            <button id="btn-dom-snap" class="btn ghost" title="Сохранить снимок списков">📸 Снимок</button>
+            <button id="btn-dom-save" class="btn accent">💾 Сохранить</button>
+            <button id="btn-dom-refresh" class="btn ghost">🔄 Обновить</button>
+          </div>
+        </div>
+        <div class="cols">
+          <div class="card grow1"><div class="sect">ФАЙЛЫ</div><div id="dom-list"></div></div>
+          <div class="card grow2"><div class="sect" id="dom-title">Содержимое</div><textarea id="dom-text" spellcheck="false"></textarea></div>
+        </div>
+      </section>
+
+      <section class="page hidden" id="page-logs">
+        <div class="card">
+          <div class="btn-row"><span class="muted small">История проверок сохраняется в data/checks/*.json</span><span class="spacer"></span><button id="btn-logs-refresh" class="btn ghost">🔄 Обновить</button></div>
+        </div>
+        <div class="cols">
+          <div class="card grow1"><div class="sect">ФАЙЛЫ</div><div id="logs-list"></div></div>
+          <div class="card grow2"><div class="sect">СОДЕРЖИМОЕ</div><pre id="log-view" class="logbox tall"></pre></div>
+        </div>
+      </section>
+
+      <section class="page hidden" id="page-journal">
+        <div class="card">
+          <div class="btn-row"><span class="muted small">Все переключения и изменения настроек</span><span class="spacer"></span><button id="btn-journal-refresh" class="btn ghost">🔄 Обновить</button></div>
+          <pre id="journal-view" class="logbox tall"></pre>
+        </div>
+      </section>
+
+      <section class="page hidden" id="page-settings">
+        <div class="card narrow">
+          <div class="sect">КОРНЕВАЯ ПАПКА ZAPRET</div>
+          <div class="btn-row"><input id="set-root" class="wide"><button id="btn-autodetect" class="btn ghost">🔍 Найти</button><button id="btn-save-root" class="btn accent">💾 Сохранить</button></div>
+          <div class="muted small">Папка, где лежат general*.bat, service.bat и каталоги bin/ и lists/.</div>
+          <div class="btn-row" style="margin-top:8px">
+            <button id="btn-reinstall" class="btn ghost">🔄 Переустановить Zapret</button>
+            <span id="reinstall-status" class="muted small"></span>
+          </div>
+          <div class="progress hidden" id="reinstall-prog"><div id="reinstall-fill"></div></div>
+        </div>
+        <div class="card narrow">
+          <div class="sect">МОНИТОРИНГ И АВТОПЕРЕКЛЮЧЕНИЕ</div>
+          <label class="row"><span>Следить за соединением</span><input type="checkbox" id="set-mon" class="switch"></label>
+          <label class="row"><span>Звуковые уведомления</span><input type="checkbox" id="set-sound" class="switch"></label>
+          <div class="btn-row"><label>Интервал, мин <input id="set-interval" type="number" min="1" value="3"></label><label>Таймаут HTTP, с <input id="set-timeout" type="number" min="2" max="30" value="4"></label><label>Возврат watchdog, мин <input id="set-wdreturn" type="number" min="5" value="15"></label></div>
+          <label class="row"><span>Дежурный напарник <span class="muted small">(охраняется основной)</span></span><input type="checkbox" id="set-buddy" class="switch"></label>
+          <div class="btn-row"><button id="btn-buddy-assign" class="btn ghost">Основной = активный</button><span id="buddy-pair" class="muted small"></span></div>
+          <label class="row"><span>Игровой режим <span class="muted small">(пауза мониторинга в игре)</span></span><input type="checkbox" id="set-game" class="switch"></label>
+          <div class="btn-row"><input id="set-game-procs" style="flex:1;min-width:200px" placeholder="cs2.exe, dota2.exe, ..."><button id="btn-save-game" class="btn ghost">💾</button></div>
+          <button id="btn-save-mon" class="btn ghost">💾 Сохранить мониторинг</button>
+        </div>
+        <div class="card narrow">
+          <div class="sect">ОФОРМЛЕНИЕ</div>
+          <div class="btn-row" id="theme-row">
+            <button data-theme="scarlet" class="btn ghost">Алый</button>
+            <button data-theme="terminal" class="btn ghost">Терминал</button>
+            <button data-theme="amethyst" class="btn ghost">Аметист</button>
+            <button data-theme="vsd" class="btn ghost hidden" id="theme-vsd">VSD</button>
+          </div>
+          <div class="muted small">Тема применяется мгновенно, без перезапуска.</div>
+          <div class="btn-row" style="margin-top:10px">
+            <label>Шрифт <select id="font-fam"></select></label>
+            <label>Размер <input id="font-scale" type="range" min="85" max="130" step="5" value="100"></label>
+          </div>
+          <div class="sect" style="margin-top:12px">СВОЯ ТЕМА</div>
+          <div id="custom-theme-grid"></div>
+          <div class="btn-row" style="margin-top:8px">
+            <button id="btn-theme-save" class="btn accent">💾 Сохранить тему</button>
+            <button id="btn-theme-export" class="btn ghost">📤 Экспорт</button>
+            <button id="btn-theme-import" class="btn ghost">📥 Импорт</button>
+            <button id="btn-theme-reset" class="btn ghost">↺ Сброс</button>
+          </div>
+          <label class="row"><span>Funny option</span><input type="checkbox" id="set-funny" class="switch"></label>
+          <div class="btn-row"><input id="secret-code" type="password" placeholder="" style="width:220px"><button id="btn-secret-ok" class="btn accent">OK</button></div>
+          <div id="secret-status" class="muted small"></div>
+          <label class="row hidden" id="secret-toggle-row"><span id="secret-toggle-label">VSD оформление</span><input type="checkbox" id="set-secret" class="switch"></label>
+        </div>
+        <div class="card narrow">
+          <div class="sect">ПРИЛОЖЕНИЕ</div>
+          <label class="row"><span>Запускать вместе с Windows <span class="muted small">(планировщик, с правами администратора)</span></span><input type="checkbox" id="set-autostart" class="switch"></label>
+          <div class="btn-row">
+            <button id="btn-data-folder" class="btn ghost">📂 Открыть папку данных</button>
+            <button id="btn-flush-dns" class="btn ghost">🧹 Сбросить DNS-кэш</button>
+          </div>
+          <div class="btn-row" style="margin-top:8px">
+            <button id="btn-shortcut" class="btn ghost">📌 Ярлык на рабочий стол</button>
+            <button id="btn-icon-cache" class="btn ghost">🔄 Обновить кэш иконок</button>
+            <button id="btn-export" class="btn ghost">📤 Экспорт отчёта</button>
+          </div>
+          <div class="btn-row" style="margin-top:8px">
+            <button id="btn-updates" class="btn ghost">🔍 Проверить обновления</button>
+            <span id="update-info" class="muted small"></span>
+          </div>
+          <div class="muted small">Zapret Manager v2.0.0 · Tauri + Rust · ноль рантаймов для установки</div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+  </div><!-- /layout -->
+  <div class="brick-strip hidden" id="brick-bottom"></div>
+</div>
+<div id="tv" class="hidden"><img class="tv-screen" id="tv-screen" alt=""><img class="tv-frame" id="tv-frame" alt=""></div>
+<div id="spam-intro" class="hidden"><img id="spam-intro-img" alt=""></div>
+<div id="spam-say" class="hidden"></div>
+<div id="blackout" class="hidden"></div>
+<div id="wizard" class="hidden"><div id="wizard-card"><div id="wizard-title">🔥 Быстрая настройка</div><div id="wizard-sub"></div><div id="wizard-body"></div><div class="btn-row" id="wizard-nav"></div></div></div>
+<div id="tour-tip" class="hidden"></div>
+<div id="toasts"></div>
+<div id="modal-wrap" class="hidden"><div id="modal-card"><div id="modal-title"></div><div id="modal-body"></div><div class="btn-row" id="modal-btns"></div></div></div>
+<script src="app.js"></script>
+</body>
+</html>
