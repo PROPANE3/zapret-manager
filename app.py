@@ -25,7 +25,7 @@ import webbrowser
 
 try:
     import tkinter as tk
-    from tkinter import ttk, filedialog
+    from tkinter import ttk, filedialog, colorchooser
     import tkinter.font as tkfont
 except ImportError:
     print("tkinter не найден")
@@ -39,7 +39,7 @@ except ImportError:
 # Схема версий x.yy.zz: x — крупные обновления, y — рядовые обновления,
 # z — фиксы. При повышении старшего звена все младшие сбрасываются в 0
 # (пример: 1.2.3 -> рядовое -> 1.3.0; крупное -> 2.0.0; фикс -> 1.2.4).
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.5.0"
 APP_NAME = "Zapret Manager"
 APP_REPO = "PROPANE3/zapret-manager"
 APP_ID = "Flowseal.ZapretManager"
@@ -344,6 +344,82 @@ def _wrap_ico(png_bytes):
     head = _st.pack("<HHH", 0, 1, 1)
     entry = _st.pack("<BBBBHHII", wb, hb, 0, 0, 1, 32, len(png_bytes), 6 + 16)
     return head + entry + png_bytes
+
+
+def _scale_rgba_nearest(src_w, src_h, rgba, dst_w, dst_h):
+    """Уменьшить RGBA до dst_w×dst_h (nearest, чистый stdlib).
+
+    Для иконки таскбара: исходный квадрат (сотни px) -> 16/32/48/...
+    Билиней не нужен — nearest на таких размерах выглядит чисто.
+    """
+    out = bytearray(dst_w * dst_h * 4)
+    for y in range(dst_h):
+        sy = min(src_h - 1, int(y * src_h / dst_h))
+        srow = sy * src_w * 4
+        drow = y * dst_w * 4
+        for x in range(dst_w):
+            sx = min(src_w - 1, int(x * src_w / dst_w))
+            s = srow + sx * 4
+            d = drow + x * 4
+            out[d] = rgba[s]
+            out[d + 1] = rgba[s + 1]
+            out[d + 2] = rgba[s + 2]
+            out[d + 3] = rgba[s + 3]
+    return bytes(out)
+
+
+def _wrap_multi_ico(images):
+    """Несколько PNG -> .ico (таскбар берёт 16/32/48, alt-tab — крупные).
+
+    images: [(w, h, png_bytes), ...]. Смещение каждой записи считается
+    от начала файла. Одна большая PNG-запись (как раньше) в таскбаре
+    не подбиралась — отсюда «в alt-tab есть, в таскбаре нет».
+    """
+    import struct as _st
+    n = len(images)
+    head = _st.pack("<HHH", 0, 1, n)
+    off = 6 + 16 * n
+    entries = b""
+    for w, h, png in images:
+        wb = w if w < 256 else 0
+        hb = h if h < 256 else 0
+        entries += _st.pack("<BBBBHHII", wb, hb, 0, 0, 1, 32,
+                            len(png), off)
+        off += len(png)
+    out = bytearray(head + entries)
+    for _, _, png in images:
+        out += png
+    return bytes(out)
+
+
+def _build_silly_ico_bytes(size, square_rgba):
+    """Квадрат RGBA -> мультиразмерный .ico для таскбара+alt-tab."""
+    sizes = (16, 32, 48, 64, 128, 256)
+    images = []
+    for s in sizes:
+        if s > size:
+            continue
+        try:
+            scaled = _scale_rgba_nearest(size, size, square_rgba, s, s)
+            images.append((s, s, _encode_png_rgba(s, s, bytearray(scaled))))
+        except Exception:
+            continue
+    try:
+        # крупнейший оригинал — последним (для alt-tab/preview),
+        # если его размер ещё не покрыт (иначе будет дубль записи)
+        if size not in set(sizes):
+            images.append((size, size,
+                           _encode_png_rgba(size, size, bytearray(square_rgba))))
+    except Exception:
+        pass
+    if not images:
+        return b""
+    # ICO хочет записи по возрастанию размера
+    try:
+        images.sort(key=lambda t: t[0])
+    except Exception:
+        pass
+    return _wrap_multi_ico(images)
 
 
 # ранг оценки конфига (0..4 из config_grade) -> гифка телика
@@ -735,6 +811,69 @@ def remap_color(hexcolor):
         return hexcolor
 
 
+CUSTOM_THEME_NAME = "Своя"
+CUSTOM_THEME_PATH = os.path.join(DATA_DIR, "custom_theme.json")
+
+
+def play_notify(kind="down"):
+    """Короткий системный звук: down — падение, up — восстановление.
+
+    Только stdlib (winsound, Windows). Ошибки глотаем: звука может не быть.
+    """
+    try:
+        if os.name != "nt":
+            return
+        import winsound
+        if kind == "down":
+            winsound.Beep(440, 180)
+            winsound.Beep(330, 240)
+        elif kind == "up":
+            winsound.Beep(523, 130)
+            winsound.Beep(659, 130)
+            winsound.Beep(784, 200)
+        else:
+            winsound.MessageBeep()
+    except Exception:
+        pass
+
+
+def load_custom_themes():
+    """Подтянуть 'Свою' тему из data/custom_theme.json в THEMES."""
+    try:
+        pal = dict(THEMES["Алый"])
+        if os.path.exists(CUSTOM_THEME_PATH):
+            with open(CUSTOM_THEME_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            saved = (data.get("palette") or {}) if isinstance(data, dict) else {}
+            for k in THEME_KEYS:
+                v = saved.get(k)
+                if isinstance(v, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", v):
+                    pal[k] = v
+        THEMES[CUSTOM_THEME_NAME] = pal
+    except Exception:
+        try:
+            THEMES[CUSTOM_THEME_NAME] = dict(THEMES["Алый"])
+        except Exception:
+            pass
+
+
+def save_custom_themes(palette):
+    """Сохранить палитру 'Своей' темы на диск и в THEMES."""
+    pal = {k: palette.get(k, THEMES["Алый"][k]) for k in THEME_KEYS}
+    THEMES[CUSTOM_THEME_NAME] = dict(pal)
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(CUSTOM_THEME_PATH, "w", encoding="utf-8") as f:
+            json.dump({"name": CUSTOM_THEME_NAME, "palette": pal},
+                      f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+    return dict(pal)
+
+
+load_custom_themes()
+
+
 # Красивые читаемые шрифты (фильтруются по наличию в системе)
 FONT_WHITELIST = ["Calibri", "Segoe UI", "Verdana", "Tahoma", "Trebuchet MS",
                   "Corbel", "Candara", "Georgia", "Arial"]
@@ -757,7 +896,21 @@ DEFAULT_CONFIG = {
     "ui_scale": "Крупный",
     "mono_font": "Consolas",
     "theme": "Алый",
+    "custom_theme": {},
     "silly_mode": False,
+    "sound_enabled": True,
+    "resume_check": True,
+    "watchdog_return_min": 15,
+    "fav_configs": [],
+    "game_mode": False,
+    "game_procs": "cs2.exe, dota2.exe, GTA5.exe, eldenring.exe",
+    "win_geometry": "",
+    "buddy_enabled": False,
+    "buddy_primary": "",
+    "buddy_fallback": "",
+    "tour_done": False,
+    "wizard_done": False,
+    "first_run_done": False,
 }
 
 
@@ -933,6 +1086,32 @@ def read_actions(limit=500):
         return []
     try:
         with open(ACTIONS_PATH, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        return lines[-limit:]
+    except Exception:
+        return []
+
+
+SWITCHES_PATH = os.path.join(DATA_DIR, "switches.log")
+SWITCHES_LABEL = "🔄 Переключения"
+
+
+def log_switch(text):
+    """Короткая строка в отдельную историю переключений конфигов."""
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(SWITCHES_PATH, "a", encoding="utf-8") as f:
+            f.write(f"[{ts}] {text}\n")
+    except Exception:
+        pass
+
+
+def read_switches(limit=500):
+    if not os.path.exists(SWITCHES_PATH):
+        return []
+    try:
+        with open(SWITCHES_PATH, "r", encoding="utf-8") as f:
             lines = f.readlines()
         return lines[-limit:]
     except Exception:
@@ -1120,6 +1299,64 @@ def organize_configs(zapret_root):
     if moved:
         return moved, f"в {PRECONFIGS_DIRNAME} перенесено конфигов: {moved}"
     return 0, "конфиги уже в порядке"
+
+
+LISTS_SNAPSHOT_PATH = os.path.join(DATA_DIR, "lists_snapshot.json")
+
+
+def snapshot_lists(zapret_root):
+    """Снимок lists/: {имя: sha1}. Для Diff релиза."""
+    import hashlib as _hl
+    snap = {}
+    d = os.path.join(zapret_root or "", "lists")
+    try:
+        if not os.path.isdir(d):
+            return snap
+        for fn in sorted(os.listdir(d)):
+            fp = os.path.join(d, fn)
+            if not os.path.isfile(fn if os.path.isabs(fn) else fp):
+                continue
+            try:
+                with open(fp, "rb") as f:
+                    snap[fn] = _hl.sha1(f.read()).hexdigest()
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return snap
+
+
+def load_lists_snapshot():
+    try:
+        if os.path.exists(LISTS_SNAPSHOT_PATH):
+            with open(LISTS_SNAPSHOT_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+    except Exception:
+        pass
+    return {}
+
+
+def save_lists_snapshot(snap):
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(LISTS_SNAPSHOT_PATH, "w", encoding="utf-8") as f:
+            json.dump(snap, f, ensure_ascii=False, indent=1)
+    except Exception:
+        pass
+
+
+def diff_lists_snaps(old, new):
+    """(added, removed, changed) — списки имён файлов."""
+    try:
+        so, sn = set(old or {}), set(new or {})
+        added = sorted(sn - so)
+        removed = sorted(so - sn)
+        changed = sorted(n for n in (so & sn) if old[n] != new[n])
+        return added, removed, changed
+    except Exception:
+        return [], [], []
 
 
 def parse_targets(zapret_root):
@@ -2353,6 +2590,51 @@ def create_desktop_shortcut():
         return False, str(e)
 
 
+def ensure_launcher():
+    """Самоподготовка лаунчера (замена второй половины install.bat).
+
+    Копирует текущий pythonw.exe в zapret-manager.exe рядом с app.py
+    (+ python3*.dll, vcruntime*.dll, pyvenv.cfg), чтобы процесс был виден
+    в диспетчере как zapret-manager, а не python. Store-python пропускаем.
+    Возвращает True, если лаунчер есть (был или создан).
+    """
+    try:
+        if os.name != "nt":
+            return False
+        dst = os.path.join(BASE_DIR, "zapret-manager.exe")
+        if os.path.exists(dst):
+            return True
+        src = sys.executable or ""
+        low = src.lower()
+        if not src or "windowsapps" in low or not os.path.exists(src):
+            return False
+        if os.path.basename(low) not in ("python.exe", "pythonw.exe"):
+            return False
+        srcdir = os.path.dirname(src)
+        try:
+            shutil.copy2(src, dst)
+        except Exception:
+            return False
+        for pat in ("python3*.dll", "vcruntime*.dll"):
+            try:
+                for fp in glob.glob(os.path.join(srcdir, pat)):
+                    try:
+                        shutil.copy2(fp, os.path.join(BASE_DIR, os.path.basename(fp)))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        try:
+            with open(os.path.join(BASE_DIR, "pyvenv.cfg"), "w", encoding="utf-8") as f:
+                f.write(f"home = {srcdir}\ninclude-system-site-packages = true\n")
+        except Exception:
+            pass
+        log_action(f"Лаунчер создан: {dst}")
+        return True
+    except Exception:
+        return False
+
+
 # ---- автозагрузка самого приложения ----
 APP_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 APP_RUN_NAME = "ZapretManager"
@@ -2935,6 +3217,36 @@ def _round_points(x0, y0, x1, y1, r, seg=4):
     return pts
 
 
+def gradient_photo(w, h, stops, vertical=False):
+    """Градиент PhotoImage: stops — [hex, ...] равномерно по длине.
+
+    Только stdlib: считаем построчно/постолбцово и кладём через put()
+    одной строкой. Размеры маленькие (полосы 2–3 px) — мгновенно.
+    """
+    w, h = max(1, int(w)), max(1, int(h))
+    stops = list(stops or ["#000000", "#FFFFFF"])
+    if len(stops) < 2:
+        stops = (stops + stops)[:2]
+    n = len(stops) - 1
+
+    def _at(t):
+        seg = min(n - 1, int(t * n))
+        return _mix_hex(stops[seg], stops[seg + 1], t * n - seg)
+
+    img = tk.PhotoImage(width=w, height=h)
+    if vertical:
+        rows = []
+        for y in range(h):
+            c = _at(y / (h - 1) if h > 1 else 0)
+            rows.append("{" + " ".join([c] * w) + "}")
+        img.put(" ".join(rows))
+    else:
+        cols = [_at(x / (w - 1) if w > 1 else 0) for x in range(w)]
+        row = "{" + " ".join(cols) + "}"
+        img.put(" ".join([row] * h))
+    return img
+
+
 class StatusBadge(tk.Canvas):
     """Пилюля статуса в шапке: цветная точка + текст на тонированной подложке."""
 
@@ -3248,13 +3560,21 @@ class NiceScroll(tk.Canvas):
 
 
 class DropMenu(tk.Frame):
-    """Красивый выпадающий список вместо Combobox. Темы — через THEMED."""
+    """Красивый выпадающий список вместо Combobox. Темы — через THEMED.
 
-    def __init__(self, parent, variable, values, width=24, command=None, **kw):
+    font_func: callable(value) -> font tuple для предпоказа (например,
+    lambda v: (v, 10) — каждая строка своим шрифтом).
+    preview_selected: выбранное значение в шапке тоже своим шрифтом.
+    """
+
+    def __init__(self, parent, variable, values, width=24, command=None,
+                 font_func=None, preview_selected=False, **kw):
         super().__init__(parent, bg=BORDER, padx=1, pady=1)
         self._var = variable
         self._values = list(values or [])
         self._command = command
+        self._font_func = font_func
+        self._preview_selected = bool(preview_selected)
         self._pop = None
         self._inner = tk.Frame(self, bg=CARD2)
         self._inner.pack(fill="both", expand=True)
@@ -3276,12 +3596,53 @@ class DropMenu(tk.Frame):
                 w.configure(cursor="hand2")
             except Exception:
                 pass
+        self._refresh_selected_font()
+        try:
+            self._var.trace_add("write", lambda *_a: self._refresh_selected_font())
+        except Exception:
+            pass
         track_themed(self)
+
+    def set_font_func(self, func, preview_selected=None):
+        """Задать предпоказ шрифтов постфактум."""
+        try:
+            self._font_func = func
+            if preview_selected is not None:
+                self._preview_selected = bool(preview_selected)
+            self._refresh_selected_font()
+        except Exception:
+            pass
+
+    def _row_font(self, value):
+        try:
+            if callable(self._font_func):
+                f = self._font_func(value)
+                if f:
+                    return f
+        except Exception:
+            pass
+        return (FONT, 10)
+
+    def _refresh_selected_font(self):
+        """Шапка — шрифтом выбранного значения (предпоказ)."""
+        try:
+            if not self._preview_selected:
+                return
+            try:
+                cur = self._var.get()
+            except Exception:
+                return
+            if not cur:
+                return
+            self._lbl.configure(font=self._row_font(cur))
+        except Exception:
+            pass
 
     def set_values(self, values):
         self._values = list(values or [])
         if self._var.get() not in self._values and self._values:
             self._var.set(self._values[0])
+        self._refresh_selected_font()
 
     def apply_theme(self):
         try:
@@ -3309,7 +3670,8 @@ class DropMenu(tk.Frame):
             frm = tk.Frame(pop, bg=CARD2)
             frm.pack(fill="both", expand=True, padx=1, pady=1)
             for v in self._values:
-                row = tk.Label(frm, text=v, bg=CARD2, fg=TEXT, font=(FONT, 10),
+                rf = self._row_font(v)
+                row = tk.Label(frm, text=v, bg=CARD2, fg=TEXT, font=rf,
                                anchor="w", padx=10, pady=5)
                 row.pack(fill="x")
                 row.bind("<Enter>", lambda e, r=row: r.configure(bg=ACCENT, fg="white"))
@@ -3663,17 +4025,49 @@ class ZapretApp:
         self.monitor_thread = None
         self.monitor_stop = threading.Event()
         self.minimized = minimized
+        # --- умный watchdog: откат + возврат к основному ---
+        self._wd_primary = str(self.cfg.get("watchdog_primary") or "")
+        self._wd_fallback = ""
+        self._wd_due = 0.0
+        # --- история пингов для спарклайнов (None = замер не удался) ---
+        self.ping_hist = {"DiscordMain": [], "YouTubeWeb": []}
+        self._spark = {}
+        # --- вотчер пробуждения из сна ---
+        self._resume_last = time.time()
+        self._resume_busy = False
 
         root.title(f"{APP_NAME} v{APP_VERSION}")
-        # стартовый размер — широко, чтобы все поля видны сразу: 1480x860,
-        # ужато под экран и отцентрировано
+        # геометрия: сохранённая с прошлого раза — или умолчание по центру
+        _geo_ok = False
         try:
-            sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-            ww, hh = min(1480, max(1100, sw - 40)), min(860, max(660, sh - 60))
-            root.geometry(f"{ww}x{hh}+{(sw - ww) // 2}+{(sh - hh) // 2}")
+            _saved = (self.cfg.get("win_geometry") or "").strip()
+            m = re.fullmatch(r"(\d+)x(\d+)([+-]\d+)([+-]\d+)", _saved)
+            if m:
+                sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+                _w, _h = int(m.group(1)), int(m.group(2))
+                _x, _y = int(m.group(3)), int(m.group(4))
+                if (1000 <= _w <= sw and 640 <= _h <= sh
+                        and -_w + 100 <= _x <= sw - 100
+                        and 0 <= _y <= sh - 100):
+                    root.geometry(_saved)
+                    _geo_ok = True
         except Exception:
-            root.geometry("1480x860")
+            _geo_ok = False
+        if not _geo_ok:
+            # стартовый размер — широко, чтобы все поля видны сразу: 1480x860,
+            # ужато под экран и отцентрировано
+            try:
+                sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+                ww, hh = min(1480, max(1100, sw - 40)), min(860, max(660, sh - 60))
+                root.geometry(f"{ww}x{hh}+{(sw - ww) // 2}+{(sh - hh) // 2}")
+            except Exception:
+                root.geometry("1480x860")
         root.minsize(1000, 640)
+        # крестик системного меню (Alt+F4) — тоже через _win_close с сохранением
+        try:
+            root.protocol("WM_DELETE_WINDOW", self._win_close)
+        except Exception:
+            pass
         try:
             root.configure(bg=BG)
         except Exception:
@@ -3707,9 +4101,15 @@ class ZapretApp:
                 root.iconify()
             except Exception:
                 pass
-        # автопроверка папки
-        if not os.path.isdir(self.cfg.get("zapret_root", "")):
-            self.root.after(400, self.ask_zapret_root_first)
+        # первый запуск: тихий лаунчер + мастер настройки (вместо install.bat)
+        if not self.cfg.get("first_run_done"):
+            try:
+                ensure_launcher()
+            except Exception:
+                pass
+            self.cfg["first_run_done"] = True
+            save_config(self.cfg)
+        self.root.after(600, self._maybe_start_wizard)
         # старт мониторинга
         if self.cfg.get("monitor_enabled"):
             self.start_monitor()
@@ -3718,6 +4118,8 @@ class ZapretApp:
         self.check_app_updates()
         # resource monitor
         self.start_resource_monitor()
+        # вотчер пробуждения из сна (лёгкий поток, stdlib-only)
+        self._start_resume_watcher()
         # страховка: если <Map> так и не придёт — включить опцию позже
         try:
             self.root.after(8000, self._apply_silly_deferred)
@@ -3869,9 +4271,10 @@ class ZapretApp:
         left.bind("<ButtonPress-1>", self._drag_start)
         left.bind("<B1-Motion>", self._drag_move)
         left.bind("<ButtonRelease-1>", self._drag_stop)
-        # тонкая акцентная линия под шапкой
-        self.title_strip = tk.Frame(self.root, bg=ACCENT, height=2)
+        # тонкая акцентная линия под шапкой — градиент в цветах темы
+        self.title_strip = tk.Label(self.root, bd=0, highlightthickness=0)
         self.title_strip.grid(row=1, column=0, columnspan=2, sticky="ew")
+        self._grad_imgs = {}
 
     def _drag_start(self, e):
         try:
@@ -3919,6 +4322,13 @@ class ZapretApp:
                 return
             self.engine.cancel()
         log_action("Приложение закрыто пользователем")
+        # запомнить геометрию окна (кроме развёрнутого — там цифры мусорные)
+        try:
+            if self.root.state() != "zoomed":
+                self.cfg["win_geometry"] = self.root.geometry()
+                save_config(self.cfg)
+        except Exception:
+            pass
         try:
             self.monitor_stop.set()
         except Exception:
@@ -3969,6 +4379,10 @@ class ZapretApp:
         sb = tk.Frame(body, bg=SIDEBAR, width=230)
         sb.grid(row=0, column=0, sticky="nsew")
         sb.grid_propagate(False)
+        self._sb = sb
+        # светящаяся кромка справа — вертикальный градиент в цветах темы
+        self._sb_edge = tk.Label(sb, bd=0, highlightthickness=0)
+        self._sb_edge.place(relx=1.0, rely=0, relheight=1.0, width=3, anchor="ne")
         brand = tk.Frame(sb, bg=SIDEBAR)
         brand.pack(fill="x", padx=14, pady=(18, 6))
         tk.Label(brand, text="🔥", bg=ACCENT, fg="white",
@@ -4077,11 +4491,172 @@ class ZapretApp:
         self.build_actions_page()
         self.build_settings_page()
         self.show_page("check")
+        # градиенты в цветах темы + перерисовка при ресайзе (с задержкой)
+        try:
+            self._paint_gradients()
+            self._grad_after = None
+            self.root.bind("<Configure>", self._grad_resize, add="+")
+        except Exception:
+            pass
+
+    def _grad_resize(self, _e=None):
+        try:
+            if self._grad_after is not None:
+                try:
+                    self.root.after_cancel(self._grad_after)
+                except Exception:
+                    pass
+            self._grad_after = self.root.after(500, self._paint_gradients)
+        except Exception:
+            pass
+
+    def _paint_gradients(self):
+        """Перерисовать градиентные полосы в цветах текущей темы."""
+        try:
+            self._grad_after = None
+        except Exception:
+            pass
+        try:
+            try:
+                ww = max(400, self.root.winfo_width())
+            except Exception:
+                ww = 1480
+            try:
+                sh = max(400, self._sb.winfo_height())
+            except Exception:
+                sh = 860
+            strip = gradient_photo(ww, 3, [ACCENT, ACCENT2, ACCENT_DEEP])
+            edge = gradient_photo(3, sh, [ACCENT, ACCENT_DEEP, SIDEBAR],
+                                  vertical=True)
+            self._grad_imgs = {"strip": strip, "edge": edge}
+            self.title_strip.configure(image=strip)
+            self._sb_edge.configure(image=edge)
+        except Exception:
+            pass
+
+    def _fun_park_for_page(self, key):
+        """Прятать телик на странице настроек (он перекрывал тумблер Funny option).
+
+        Анимация не останавливается — только place_forget; на остальных
+        страницах оверлей возвращается. Вызывается из show_page.
+        """
+        try:
+            if not self.cfg.get("silly_mode") or not self._fun_visible:
+                return
+            if key == "settings":
+                self.fun_tv_wrap.place_forget()
+            else:
+                self.fun_tv_wrap.place(**self._fun_place_args)
+                self.fun_tv_wrap.lift()
+        except Exception:
+            pass
+
+    # ================= тур первого запуска =================
+    TOUR_STEPS = (
+        ("nav_check", "1. Проверка",
+         "Здесь живут конфиги. Выберите галочками и жмите большую кнопку — "
+         "менеджер замерит пинги и поставит оценки."),
+        ("hero", "2. Что активно",
+         "Текущий конфиг, служба, живые пинги DS/YT со спарклайнами и напарник."),
+        ("run", "3. Запуск",
+         "«Проверить выбранные», «Все» или только «Активный». Даблклик по строке "
+         "списка слева — сразу применить конфиг."),
+        ("nav_domains", "4. Домены",
+         "Списки обхода: просмотр, правка, новые листы и diff после обновлений."),
+        ("nav_settings", "5. Настройки",
+         "Папка zapret, мониторинг и напарник, темы и своя палитра, шрифты без "
+         "перезапуска. Приятного обхода!"),
+    )
+
+    def _tour_widget(self, key):
+        try:
+            if key == "nav_check":
+                return self.nav_btns.get("check")
+            if key == "hero":
+                return self.active_lbl
+            if key == "run":
+                return self.btn_check_sel
+            if key == "nav_domains":
+                return self.nav_btns.get("domains")
+            if key == "nav_settings":
+                return self.nav_btns.get("settings")
+        except Exception:
+            pass
+        return None
+
+    def _maybe_start_tour(self):
+        """Тур подсказок один раз (после мастера/при первом запуске)."""
+        try:
+            if self.cfg.get("tour_done"):
+                return
+            if getattr(self, "_tour_open", False):
+                return
+            self._tour_open = True
+            self.show_page("check")
+            self.root.after(800, lambda: self._tour_step(0))
+        except Exception:
+            pass
+
+    def _tour_finish(self, tip):
+        try:
+            if tip is not None:
+                tip.destroy()
+        except Exception:
+            pass
+        try:
+            self._tour_open = False
+            self.cfg["tour_done"] = True
+            save_config(self.cfg)
+        except Exception:
+            pass
+
+    def _tour_step(self, idx):
+        if self.cfg.get("tour_done"):
+            return
+        if idx >= len(self.TOUR_STEPS):
+            self._tour_finish(None)
+            return
+        key, title, text = self.TOUR_STEPS[idx]
+        w = self._tour_widget(key)
+        if w is None or not w.winfo_exists():
+            self._tour_step(idx + 1)
+            return
+        try:
+            tip = tk.Toplevel(self.root)
+            tip.overrideredirect(True)
+            tip.attributes("-topmost", True)
+            tip.configure(bg=BORDER)
+            frm = tk.Frame(tip, bg=CARD, padx=16, pady=12)
+            frm.pack(fill="both", expand=True, padx=1, pady=1)
+            tk.Label(frm, text=f"{title}  ({idx + 1}/{len(self.TOUR_STEPS)})",
+                     bg=CARD, fg=ACCENT2, font=(FONT, 10, "bold"),
+                     anchor="w").pack(fill="x")
+            tk.Label(frm, text=text, bg=CARD, fg=TEXT, font=(FONT, 10),
+                     wraplength=300, justify="left").pack(fill="x", pady=(6, 10))
+            brow = tk.Frame(frm, bg=CARD)
+            brow.pack(fill="x")
+            RButton(brow, text="Далее →" if idx + 1 < len(self.TOUR_STEPS) else "Готово ✓",
+                    style="accent",
+                    command=lambda: (tip.destroy(), self._tour_step(idx + 1))).pack(side="left", padx=(0, 8))
+            RButton(brow, text="Пропустить", style="ghost",
+                    command=lambda: self._tour_finish(tip)).pack(side="left")
+            tip.update_idletasks()
+            x = min(w.winfo_rootx(), tip.winfo_screenwidth() - 360)
+            y = w.winfo_rooty() + w.winfo_height() + 8
+            if y + 200 > tip.winfo_screenheight() - 40:
+                y = max(40, w.winfo_rooty() - 200)
+            tip.geometry(f"+{max(10, x)}+{y}")
+        except Exception:
+            self._tour_step(idx + 1)
 
     def show_page(self, key):
         titles = {"check": "Проверка конфигов", "domains": "Домены и списки",
-                  "logs": "Логи проверок", "actions": "Журнал действий",
-                  "settings": "Настройки"}
+                   "logs": "Логи проверок", "actions": "Журнал действий",
+                   "settings": "Настройки"}
+        try:
+            self._current_page = key
+        except Exception:
+            pass
         subs = {"check": "замер пингов Discord и YouTube по каждому конфигу",
                 "domains": "списки обхода и их содержимое",
                 "logs": "история замеров и подробный ход",
@@ -4112,6 +4687,8 @@ class ZapretApp:
             self.refresh_actions()
         if key == "domains":
             self.refresh_domains_list()
+        # телик не должен перекрывать тумблер Funny option в настройках
+        self._fun_park_for_page(key)
 
     # ---------- общие виджеты ----------
     def card(self, parent, **kw):
@@ -4182,6 +4759,16 @@ class ZapretApp:
         except Exception:
             pass
         self.toast(title, text, color)
+
+    def _beep(self, kind="down"):
+        """Звуковое уведомление (если включено в настройках мониторинга)."""
+        try:
+            if not self.cfg.get("sound_enabled", True):
+                return
+            threading.Thread(target=play_notify, args=(kind,),
+                             daemon=True).start()
+        except Exception:
+            pass
 
     def _win_xywh(self):
         """Позиция+размер окна: правда из WinAPI, запасной — winfo."""
@@ -4287,6 +4874,69 @@ class ZapretApp:
         return bool(self._modal("ask", title, text,
                                 [("Да", True, "accent"), ("Нет", False, "ghost")]))
 
+    def dlg_input(self, text, title="Ввод", initial="", placeholder=""):
+        """Модалка с полем ввода. Возвращает строку или None (отмена)."""
+        res = {"v": None}
+        ov = tk.Toplevel(self.root)
+        ov.overrideredirect(True)
+        ov.attributes("-topmost", True)
+        ov.configure(bg=BORDER)
+        outer = tk.Frame(ov, bg=BORDER, padx=1, pady=1)
+        outer.pack(fill="both", expand=True)
+        inner = tk.Frame(outer, bg=CARD)
+        inner.pack(fill="both", expand=True)
+        tk.Frame(inner, bg=ACCENT, height=4).pack(fill="x")
+        body = tk.Frame(inner, bg=CARD)
+        body.pack(fill="both", expand=True, padx=22, pady=16)
+        tk.Label(body, text=title, bg=CARD, fg=TEXT, font=(FONT, 12, "bold"),
+                 anchor="w").pack(fill="x", pady=(0, 8))
+        tk.Label(body, text=text, bg=CARD, fg=MUTED, font=(FONT, 10),
+                 wraplength=380, justify="left").pack(fill="x", pady=(0, 10))
+        var = tk.StringVar(value=initial or "")
+        ent = ttk.Entry(body, textvariable=var, width=44)
+        ent.pack(fill="x", pady=(0, 14))
+        brow = tk.Frame(body, bg=CARD)
+        brow.pack(fill="x")
+
+        def _done(v):
+            res["v"] = v
+            try:
+                ov.destroy()
+            except Exception:
+                pass
+
+        RButton(brow, text="Создать", style="accent",
+                command=lambda: _done(var.get())).pack(side="left", padx=(0, 10))
+        RButton(brow, text="Отмена", style="ghost",
+                command=lambda: _done(None)).pack(side="left")
+        ov.bind("<Escape>", lambda _e: _done(None))
+        ent.bind("<Return>", lambda _e: _done(var.get()))
+        try:
+            self.root.update_idletasks()
+            ov.update_idletasks()
+            ww, wh = ov.winfo_reqwidth(), ov.winfo_reqheight()
+            rx, ry, rw, rh = self._win_xywh()
+            ov.geometry(f"+{rx + max(0, (rw - ww) // 2)}+{ry + max(0, (rh - wh) // 2)}")
+        except Exception:
+            pass
+        try:
+            ov.grab_set()
+            try:
+                ent.focus_set()
+                ent.selection_range(0, "end")
+            except Exception:
+                pass
+            ov.wait_window()
+        except Exception:
+            try:
+                ov.destroy()
+            except Exception:
+                pass
+        v = res["v"]
+        if v is None:
+            return None
+        return str(v).strip()
+
     def poll_queue(self):
         try:
             while True:
@@ -4351,6 +5001,12 @@ class ZapretApp:
         btns = tk.Frame(d, bg=CARD)
         btns.pack(fill="x", padx=18, pady=14)
         RButton(btns, text="OK", style="accent", command=d.destroy).pack(side="right")
+        RButton(btns, text="🧹 DNS-кэш", style="ghost",
+                command=lambda: self.on_flush_dns(d)).pack(side="left", padx=(0, 8))
+        add_tooltip(btns.winfo_children()[-1], "ipconfig /flushdns — сброс кэша DNS")
+        RButton(btns, text="🌐 Сброс сети", style="ghost",
+                command=lambda: self.on_net_reset(d)).pack(side="left")
+        add_tooltip(btns.winfo_children()[-1], "netsh winsock reset — нужен админ и перезагрузка")
         
         try:
             self.root.update_idletasks()
@@ -4360,6 +5016,54 @@ class ZapretApp:
             d.geometry(f"+{rx + max(0, (rw - ww) // 2)}+{ry + max(0, (rh - wh) // 2)}")
         except Exception:
             pass
+
+    def on_flush_dns(self, dlg=None):
+        """Сброс кэша DNS (ipconfig /flushdns). Безопасно, админ не нужен."""
+        def _work():
+            rc, out = run_cmd(["ipconfig", "/flushdns"], timeout=15)
+            ok = rc == 0 or "успешно" in out.lower() or "success" in out.lower()
+            log_action(f"Сброс DNS-кэша: {'ок' if ok else out.strip()[:200]}",
+                       "net" if ok else "error")
+            self.msg_q.put(("toast", ("DNS-кэш",
+                                      "Очищен" if ok else f"Не сброшен: {out.strip()[:150]}",
+                                      GREEN if ok else RED)))
+            self.msg_q.put(("actions_refresh", None))
+        threading.Thread(target=_work, daemon=True).start()
+        try:
+            if dlg is not None:
+                dlg.destroy()
+        except Exception:
+            pass
+
+    def on_net_reset(self, dlg=None):
+        """Сброс сетевого стека (netsh winsock reset). Нужен админ + ребут."""
+        try:
+            if dlg is not None:
+                dlg.destroy()
+        except Exception:
+            pass
+        if not self.dlg_ask("Сбросить сетевой стек (winsock)?\n\n"
+                            "После сброса НУЖНА перезагрузка ПК.\n"
+                            "VPN-клиенты могут попросить переустановку адаптера.\n\n"
+                            "Продолжить?"):
+            return
+
+        def _work():
+            cmds = "netsh winsock reset & netsh int ip reset"
+            if not is_admin():
+                ok = elevated_cmd(cmds)
+                msg = ("Запрос отправлен (UAC) — после выполнения "
+                       "перезагрузите ПК." if ok else "Нужны права администратора")
+                self.msg_q.put(("toast", ("Сброс сети", msg, GREEN if ok else RED)))
+                log_action(f"Сброс сети (UAC): {msg}", "net")
+            else:
+                rc, out = run_cmd(cmds, timeout=30, shell=True)
+                msg = ("Стек сброшен — перезагрузите ПК."
+                       if rc == 0 else f"Не сброшен: {out.strip()[:200]}")
+                self.msg_q.put(("toast", ("Сброс сети", msg, GREEN if rc == 0 else RED)))
+                log_action(f"Сброс сети: {msg}", "net" if rc == 0 else "error")
+            self.msg_q.put(("actions_refresh", None))
+        threading.Thread(target=_work, daemon=True).start()
 
     # ================= страница ПРОВЕРКА =================
     def _section(self, parent, text):
@@ -4391,15 +5095,23 @@ class ZapretApp:
         self.svc_lbl.pack(anchor="w", pady=(4, 0))
         self.vpn_lbl = tk.Label(aleft, text="VPN: проверка…", bg=CARD, fg=MUTED, font=(FONT, 9), anchor="w")
         self.vpn_lbl.pack(anchor="w")
+        self.buddy_lbl = tk.Label(aleft, text="", bg=CARD, fg=MUTED, font=(FONT, 9), anchor="w")
+        self.buddy_lbl.pack(anchor="w")
         # живые пинги-чипы
         self.ping_frame = tk.Frame(aleft, bg=CARD)
         self.ping_frame.pack(anchor="w", pady=(8, 0))
         self.ping_discord_lbl = tk.Label(self.ping_frame, text="DS  —", bg=CARD2, fg=MUTED,
                                          font=(MONO, 10, "bold"), padx=10, pady=4)
         self.ping_discord_lbl.pack(side="left", padx=(0, 8))
+        self._spark["DiscordMain"] = tk.Canvas(self.ping_frame, width=110, height=26,
+                                               bg=CARD2, highlightthickness=0, bd=0)
+        self._spark["DiscordMain"].pack(side="left", padx=(0, 8))
         self.ping_youtube_lbl = tk.Label(self.ping_frame, text="YT  —", bg=CARD2, fg=MUTED,
                                          font=(MONO, 10, "bold"), padx=10, pady=4)
-        self.ping_youtube_lbl.pack(side="left")
+        self.ping_youtube_lbl.pack(side="left", padx=(0, 8))
+        self._spark["YouTubeWeb"] = tk.Canvas(self.ping_frame, width=110, height=26,
+                                              bg=CARD2, highlightthickness=0, bd=0)
+        self._spark["YouTubeWeb"].pack(side="left")
         aright = tk.Frame(abar, bg=CARD)
         aright.pack(side="right", padx=18, pady=12)
         RButton(aright, text="✔ Применить выбранный", style="accent",
@@ -4411,8 +5123,11 @@ class ZapretApp:
                    command=self.on_remove_service).pack(side="left", padx=(0, 8))
         add_tooltip(aright.winfo_children()[-1], "Остановить обход и удалить службу")
         RButton(aright, text="🔧", style="ghost",
-                   command=self.run_diagnostics).pack(side="left")
+                   command=self.run_diagnostics).pack(side="left", padx=(0, 8))
         add_tooltip(aright.winfo_children()[-1], "Диагностика: BFE, прокси, WinDivert")
+        RButton(aright, text="🧬", style="ghost",
+                   command=self.open_strategy_editor).pack(side="left")
+        add_tooltip(aright.winfo_children()[-1], "Конструктор стратегий: блоки --new выбранного конфига")
         # Start ping monitor
         self._start_ping_monitor()
         # ЗАПУСК ПРОВЕРКИ: большая кнопка + прогресс
@@ -4426,10 +5141,14 @@ class ZapretApp:
                                      command=self.start_check_selected)
         self.btn_check_all = RButton(brow, text="Все", style="ghost", height=42,
                                      command=self.start_check_all)
+        self.btn_check_active = RButton(brow, text="Активный", style="ghost", height=42,
+                                        command=self.start_check_active)
         self.btn_cancel = RButton(brow, text="⛔ Отмена", style="ghost", height=42,
                                   command=self.cancel_check, state="disabled")
         self.btn_check_sel.pack(side="left", padx=(0, 8))
         self.btn_check_all.pack(side="left", padx=(0, 8))
+        self.btn_check_active.pack(side="left", padx=(0, 8))
+        add_tooltip(self.btn_check_active, "Проверить только активный конфиг")
         self.btn_cancel.pack(side="left")
         self.prog = ttk.Progressbar(top, style="Horizontal.TProgressbar", mode="determinate")
         self.prog.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 4))
@@ -4690,6 +5409,25 @@ class ZapretApp:
             return
         self.start_check(sel)
 
+    def start_check_active(self):
+        """Проверить только активный конфиг (без прогона всего списка)."""
+        bat = self.cfg.get("active_config", "") or ""
+        if not bat:
+            try:
+                bat = service_status().get("strategy", "") or ""
+                if bat and not bat.lower().endswith(".bat"):
+                    bat += ".bat"
+            except Exception:
+                bat = ""
+        if not bat:
+            self.dlg_info("Нет активного конфига — примените любой из списка")
+            return
+        fp = os.path.join(self.cfg.get("zapret_root", ""), bat)
+        if not os.path.exists(fp):
+            self.dlg_error(f"Файл активного конфига не найден:\n{fp}")
+            return
+        self.start_check([bat])
+
     def start_check_all(self):
         cfgs = list_configs(self.cfg["zapret_root"])
         if not cfgs:
@@ -4734,6 +5472,10 @@ class ZapretApp:
                 t.delete(i)
         self.btn_check_sel.config(state="disabled")
         self.btn_check_all.config(state="disabled")
+        try:
+            self.btn_check_active.config(state="disabled")
+        except Exception:
+            pass
         self.btn_cancel.config(state="normal")
         try:
             if self.cfg.get("silly_mode"):
@@ -4764,6 +5506,10 @@ class ZapretApp:
             pass
         self.btn_check_sel.config(state="normal")
         self.btn_check_all.config(state="normal")
+        try:
+            self.btn_check_active.config(state="normal")
+        except Exception:
+            pass
         self.btn_cancel.config(state="disabled")
         if not self.last_results:
             reason = getattr(self.engine, "abort_reason", "")
@@ -5017,6 +5763,19 @@ class ZapretApp:
             self.set_status(pill, pcol)
         except Exception:
             pass
+        # дежурный напарник: основной → запасной
+        try:
+            if self.cfg.get("buddy_enabled") and self.cfg.get("buddy_primary"):
+                pr, fb = self.cfg.get("buddy_primary"), self.cfg.get("buddy_fallback", "")
+                cur = self.cfg.get("active_config", "")
+                mark = "✓ на основном" if cur == pr else ("→ на запасном" if cur == fb and fb else "→ не на паре")
+                self.buddy_lbl.config(
+                    text=f"Напарник: {display_bat(pr)} → {display_bat(fb) if fb else '?'}  ({mark})",
+                    fg=GREEN if cur == pr else (YELLOW if cur == fb else MUTED))
+            else:
+                self.buddy_lbl.config(text="", fg=MUTED)
+        except Exception:
+            pass
         self.refresh_vpn_async()
         self._update_toggles()
 
@@ -5109,6 +5868,9 @@ class ZapretApp:
 
     def _fun_overlay_show(self):
         try:
+            # на странице настроек телик паркуется (иначе кроет тумблер)
+            if getattr(self, "_current_page", "") == "settings":
+                return
             self.fun_tv_wrap.place(**self._fun_place_args)
             self.fun_tv_wrap.lift()
         except Exception:
@@ -5409,6 +6171,9 @@ class ZapretApp:
         Всё тяжёлое (побайтовый pure-Python PNG на ~2 МБ) — здесь, НЕ в
         UI-потоке: именно это вешало интерфейс на секунды при включении.
         Готовые пути отдаём через очередь, применение — в _fun_icon_poll.
+        .ico пишем мультиразмерным (16..256 + оригинал): таскбар берёт
+        мелкие записи, alt-tab — крупные. Одна большая запись (как раньше)
+        в таскбаре не подбиралась.
         """
         try:
             src = os.path.join(FUNNY_DIR, "icon_silly.png")
@@ -5424,8 +6189,11 @@ class ZapretApp:
                 w, h, rgba = _read_png_rgba(src)
                 s, sqb = _crop_center_square(w, h, rgba)
                 try:
+                    blob = _build_silly_ico_bytes(s, bytes(sqb))
+                    if not blob:
+                        raise ValueError("empty ico")
                     with open(ico, "wb") as f:
-                        f.write(_wrap_ico(_encode_png_rgba(s, s, sqb)))
+                        f.write(blob)
                 except Exception:
                     ico = ""
                 try:
@@ -5465,6 +6233,12 @@ class ZapretApp:
             if not self.cfg.get("silly_mode"):
                 return
             if ico:
+                # Таскбару нужен iconbitmap(+default), alt-tab/preview — iconphoto.
+                # Только iconphoto без iconbitmap даёт «в alt-tab есть, в таскбаре нет».
+                try:
+                    self.root.iconbitmap(default=ico)
+                except Exception:
+                    pass
                 try:
                     self.root.iconbitmap(ico)
                 except Exception:
@@ -5482,6 +6256,18 @@ class ZapretApp:
                     self.root.iconphoto(True, img)
                 except Exception:
                     pass
+            # дёрнуть таскбар: перечитать иконку окна
+            try:
+                self.root.update_idletasks()
+                if os.name == "nt":
+                    from ctypes import wintypes as _wt
+                    u = ctypes.windll.user32
+                    hwnd = toplevel_hwnd(self.root)
+                    if hwnd:
+                        u.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
+                                       0x0001 | 0x0002 | 0x0004 | 0x0020 | 0x0200)
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -5524,6 +6310,10 @@ class ZapretApp:
                 try:
                     _ico = os.path.join(BASE_DIR, "assets", "icon.ico")
                     if os.path.exists(_ico):
+                        try:
+                            self.root.iconbitmap(default=_ico)
+                        except Exception:
+                            pass
                         self.root.iconbitmap(_ico)
                 except Exception:
                     pass
@@ -5532,6 +6322,16 @@ class ZapretApp:
                         self.root.iconphoto(True, self.root._icon_img)
                     except Exception:
                         pass
+                try:
+                    self.root.update_idletasks()
+                    if os.name == "nt":
+                        u = ctypes.windll.user32
+                        hwnd = toplevel_hwnd(self.root)
+                        if hwnd:
+                            u.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
+                                           0x0001 | 0x0002 | 0x0004 | 0x0020 | 0x0200)
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -5966,6 +6766,110 @@ class ZapretApp:
         
         threading.Thread(target=_diag, daemon=True).start()
 
+    @staticmethod
+    def _ping_jitter(hist):
+        """Джиттер: средний модуль разности соседних удачных замеров, мс."""
+        try:
+            vals = [v for v in (hist or []) if v]
+            if len(vals) < 2:
+                return None
+            diffs = [abs(b - a) for a, b in zip(vals, vals[1:])]
+            return sum(diffs) / len(diffs)
+        except Exception:
+            return None
+
+    def _draw_spark(self, key):
+        """Перерисовать спарклайн пингов (история ~40 замеров, шкала 0..800 мс)."""
+        try:
+            cv = self._spark.get(key)
+            if cv is None or not cv.winfo_exists():
+                return
+            hist = self.ping_hist.get(key, [])
+            cv.delete("all")
+            W, H = 110, 26
+            n = len(hist)
+            if n < 2:
+                cv.create_text(W // 2, H // 2, text="···", fill=MUTED,
+                               font=(MONO, 8))
+                return
+            pts = []
+            for i, v in enumerate(hist):
+                ms = 800 if v is None else max(0, min(800, v))
+                x = 4 + i * (W - 8) / max(1, 39)
+                y = 3 + (ms / 800) * (H - 6)
+                pts += [x, y]
+            last = hist[-1]
+            col = GREEN if last and last < 100 else (
+                YELLOW if last and last < 300 else (
+                    ACCENT2 if last else RED))
+            try:
+                cv.create_line(*pts, fill=col, width=1.5)
+            except Exception:
+                pass
+            if last:
+                cv.create_text(W - 4, 5, text=f"{last}", fill=col,
+                               font=(MONO, 7), anchor="ne")
+            # джиттер — стабильность, не только среднее
+            jit = self._ping_jitter(hist)
+            if jit is not None:
+                jcol = GREEN if jit < 20 else (YELLOW if jit < 60 else RED)
+                cv.create_text(4, H - 2, text=f"±{jit:.0f}", fill=jcol,
+                               font=(MONO, 7), anchor="sw")
+        except Exception:
+            pass
+
+    def _start_resume_watcher(self):
+        """Детект пробуждения из сна без WinAPI-подписок: скачок wall-clock.
+
+        Раз в 15 с сверяем time.time(): если прошло заметно больше
+        (сон/гибернация останавливают отсчёт бодрствования) — считаем,
+        что ПК проснулся, и делаем быструю проверку связи.
+        """
+        def _watch():
+            while True:
+                try:
+                    time.sleep(15)
+                    try:
+                        if not self.root.winfo_exists():
+                            return
+                    except Exception:
+                        return
+                    now = time.time()
+                    jumped = now - self._resume_last
+                    self._resume_last = now
+                    if jumped < 90:
+                        continue
+                    if not self.cfg.get("resume_check", True):
+                        continue
+                    if self._resume_busy or self.engine.running:
+                        continue
+                    self._resume_busy = True
+                    try:
+                        log_action(f"Пробуждение из сна (пауза ~{int(jumped)} с) — быстрая проверка")
+                        self.msg_q.put(("toast", ("💤 Пробуждение",
+                                                  "ПК проснулся из сна — проверяю связь…", YELLOW)))
+                        res = self.engine.test_targets_current()
+                        if res["blocked"]:
+                            self.msg_q.put(("toast", ("⚠ После сна",
+                                                      f"Связь плохая (пинг fail={res['bad_ping']}). "
+                                                      f"Мониторинг подберёт конфиг.", RED)))
+                            self._beep("down")
+                        else:
+                            self.msg_q.put(("toast", ("💤 После сна",
+                                                      "Связь в порядке.", GREEN)))
+                            self._beep("up")
+                        self.msg_q.put(("actions_refresh", None))
+                    except Exception as e:
+                        log_action(f"Проверка после сна: {e}", "error")
+                    finally:
+                        self._resume_busy = False
+                except Exception:
+                    try:
+                        time.sleep(30)
+                    except Exception:
+                        return
+        threading.Thread(target=_watch, daemon=True).start()
+
     def _start_ping_monitor(self):
         """Periodic ping to Discord/YouTube for real-time display"""
         def _ping():
@@ -5983,9 +6887,15 @@ class ZapretApp:
                     txt = f"{pm}ms" if pm else "—"
                     color = GREEN if pm and pm < 100 else (YELLOW if pm and pm < 300 else (ACCENT2 if pm else RED))
                     if name == "DiscordMain":
-                        self.root.after(0, lambda: self.ping_discord_lbl.config(text=f"DS: {txt}", fg=color))
+                        self.ping_hist["DiscordMain"].append(pm)
+                        del self.ping_hist["DiscordMain"][:-40]
+                        self.root.after(0, lambda t=txt, c=color: self.ping_discord_lbl.config(text=f"DS: {t}", fg=c))
+                        self.root.after(0, lambda: self._draw_spark("DiscordMain"))
                     elif name == "YouTubeWeb":
-                        self.root.after(0, lambda: self.ping_youtube_lbl.config(text=f"YT: {txt}", fg=color))
+                        self.ping_hist["YouTubeWeb"].append(pm)
+                        del self.ping_hist["YouTubeWeb"][:-40]
+                        self.root.after(0, lambda t=txt, c=color: self.ping_youtube_lbl.config(text=f"YT: {t}", fg=c))
+                        self.root.after(0, lambda: self._draw_spark("YouTubeWeb"))
             except Exception:
                 pass
             if self.root.winfo_exists():
@@ -6052,6 +6962,274 @@ class ZapretApp:
         log_action(f"Перезапуск конфига без службы: {msg}", "apply")
         self.root.after(500, self.refresh_active_bar)
         self.msg_q.put(("actions_refresh", None))
+
+    # ================= конструктор стратегий =================
+    STRATEGY_PRESETS = {
+        "fake": "--dpi-desync=fake --dpi-desync-repeats=6",
+        "multisplit": "--dpi-desync=multisplit --dpi-desync-split-seqovl=681 --dpi-desync-split-pos=1",
+        "disorder": "--dpi-desync=disorder --dpi-desync-split-pos=1",
+        "без desync": "",
+    }
+    _STRAT_END = ("pause", "exit", "goto ", "goto:", ":eof", "popd",
+                  "endlocal", "title ", "color ", "timeout ", "choice ", "cls")
+
+    @staticmethod
+    def _strat_block_title(block):
+        m = re.search(r"--filter-[^\s]+(?:=[^\s]+)?", block)
+        if m:
+            t = m.group(0)
+            m2 = re.search(r"--dpi-desync=[^\s]+", block)
+            if m2:
+                t += "  •  " + m2.group(0).split("=", 1)[1]
+            return t[:72]
+        return (block.strip()[:60] or "(пустой блок)")
+
+    def _strat_parse_bat(self, fp):
+        """Разобрать bat на (prefix, blocks, tail_lines).
+
+        prefix — начало строки запуска вплоть до winws.exe (включительно),
+        blocks — стратегии (куски между --new), tail — строки после аргументов.
+        """
+        with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.read().splitlines()
+        start = next((i for i, l in enumerate(lines)
+                      if "winws.exe" in l.lower()), None)
+        if start is None:
+            return None, None, None, "в файле нет запуска winws.exe"
+        m = re.match(r"^(.*?winws\.exe\"?)", lines[start], re.IGNORECASE)
+        if not m:
+            return None, None, None, "не разобрать строку запуска winws"
+        prefix = m.group(1)
+        rest = lines[start][len(prefix):].lstrip().lstrip('"').strip()
+        end = start
+        for i in range(start + 1, len(lines)):
+            low = lines[i].strip().lower()
+            if low.startswith(self._STRAT_END):
+                break
+            end = i
+        chunks = [rest] if rest else []
+        chunks += [ln.strip() for ln in lines[start + 1:end + 1]
+                   if ln.strip()]
+        args = " ".join(chunks)
+        args = re.sub(r"\^([\s\S])", r"\1", args).rstrip("^").strip()
+        args = re.sub(r"\s+", " ", args)
+        blocks = [b.strip() for b in
+                  re.split(r"\s--new(?=\s|$)", args) if b.strip()]
+        if not blocks:
+            return None, None, None, "не найдены аргументы winws"
+        return prefix, blocks, lines[end + 1:], ""
+
+    @staticmethod
+    def _strat_apply_preset(block, preset_args):
+        """Заменить --dpi-desync* в блоке на пресет (пустой = убрать)."""
+        block = re.sub(r"\s*--dpi-desync[^\s]*", "", block).strip()
+        block = re.sub(r"\s+", " ", block)
+        if preset_args:
+            block = (block + " " + preset_args).strip()
+        return block
+
+    @staticmethod
+    def _strat_wrap(prefix, blocks, width=220):
+        """Собрать строки запуска: prefix + блоки, переносы через ^."""
+        args = " --new ".join(blocks)
+        toks, cur, out = args.split(" "), "", []
+        for t in toks:
+            if len(cur) + len(t) + 1 > width and cur:
+                out.append(cur)
+                cur = t
+            else:
+                cur = (cur + " " + t).strip()
+        if cur:
+            out.append(cur)
+        wrapped = [prefix + " " + out[0] + (" ^" if len(out) > 1 else "")]
+        for ln in out[1:-1]:
+            wrapped.append(ln + " ^")
+        if len(out) > 1:
+            wrapped.append(out[-1])
+        return wrapped
+
+    def open_strategy_editor(self):
+        """Конструктор стратегий: блоки --new выбранного конфига."""
+        bat = self.selected_grade_bat() or self.cfg.get("active_config", "")
+        if not bat:
+            self.dlg_info("Выберите конфиг в таблице проверки (клик по строке)")
+            return
+        fp = os.path.join(self.cfg.get("zapret_root", ""), bat)
+        if not os.path.exists(fp):
+            self.dlg_error(f"Файл не найден:\n{fp}")
+            return
+        prefix, blocks, tail, err = self._strat_parse_bat(fp)
+        if err:
+            self.dlg_error(f"{bat}:\n{err}")
+            return
+        state = {"blocks": list(blocks), "idx": 0, "prefix": prefix,
+                 "tail": list(tail), "bat": bat, "fp": fp}
+        d = tk.Toplevel(self.root)
+        d.title(f"Стратегии — {bat}")
+        d.configure(bg=CARD)
+        try:
+            d.transient(self.root)
+            d.geometry("900x620")
+        except Exception:
+            pass
+        tk.Label(d, text=f"🧬 {bat}  •  блоков: {len(blocks)}",
+                 bg=CARD, fg=TEXT, font=(FONT, 12, "bold"),
+                 anchor="w").pack(fill="x", padx=16, pady=(12, 2))
+        tk.Label(d, text="Каждый блок — одна стратегия (разделитель --new). "
+                         "Правьте текст справа, шаблоны меняют --dpi-desync* в блоке.",
+                 bg=CARD, fg=MUTED, font=(FONT, 9),
+                 anchor="w").pack(fill="x", padx=16, pady=(0, 8))
+        mid = tk.Frame(d, bg=CARD)
+        mid.pack(fill="both", expand=True, padx=16)
+        mid.columnconfigure(1, weight=1)
+        mid.rowconfigure(0, weight=1)
+        lb = tk.Listbox(mid, bg=CARD2, fg=TEXT, font=(FONT, 9), width=34,
+                        bd=0, highlightthickness=0, selectbackground=ACCENT,
+                        selectforeground="white")
+        lb.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        txt = tk.Text(mid, bg=CARD2, fg=TEXT, font=(MONO, 9), bd=0,
+                      wrap="word", padx=10, pady=10,
+                      insertbackground=TEXT, selectbackground=ACCENT,
+                      selectforeground="white")
+        txt.grid(row=0, column=1, sticky="nsew")
+
+        def _titles():
+            lb.delete(0, "end")
+            for i, b in enumerate(state["blocks"]):
+                lb.insert("end", f"{i + 1}. {self._strat_block_title(b)}")
+
+        def _load(i):
+            txt.delete("1.0", "end")
+            if 0 <= i < len(state["blocks"]):
+                txt.insert("end", state["blocks"][i])
+
+        def _store():
+            try:
+                state["blocks"][state["idx"]] = txt.get("1.0", "end-1c").strip()
+            except Exception:
+                pass
+
+        def _on_sel(_e=None):
+            try:
+                sel = lb.curselection()
+                if not sel:
+                    return
+                _store()
+                state["idx"] = sel[0]
+                _load(sel[0])
+            except Exception:
+                pass
+
+        lb.bind("<<ListboxSelect>>", _on_sel)
+        _titles()
+        lb.select_set(0)
+        _load(0)
+        brow = tk.Frame(d, bg=CARD)
+        brow.pack(fill="x", padx=16, pady=8)
+        RButton(brow, text="＋ Блок", style="ghost",
+                command=lambda: (_store(),
+                                 state["blocks"].append("--filter-tcp=80,443 --dpi-desync=fake --dpi-desync-repeats=6"),
+                                 _titles(), lb.select_set(len(state["blocks"]) - 1),
+                                 _on_sel())).pack(side="left", padx=(0, 6))
+        RButton(brow, text="⧉ Дублировать", style="ghost",
+                command=lambda: (_store(),
+                                 state["blocks"].insert(state["idx"] + 1, state["blocks"][state["idx"]] if state["blocks"] else ""),
+                                 _titles())).pack(side="left", padx=(0, 6))
+        def _del_block():
+            if len(state["blocks"]) <= 1:
+                self.dlg_info("Нельзя удалить последний блок")
+                return
+            _store()
+            try:
+                state["blocks"].pop(state["idx"])
+                state["idx"] = 0
+                _titles()
+                lb.select_set(0)
+                _load(0)
+            except Exception:
+                pass
+
+        RButton(brow, text="✕ Удалить", style="ghost",
+                command=_del_block).pack(side="left", padx=(0, 6))
+        self._strat_preset_var = tk.StringVar(value="fake")
+        DropMenu(brow, variable=self._strat_preset_var,
+                 values=list(self.STRATEGY_PRESETS),
+                 width=12).pack(side="left", padx=(12, 6))
+
+        def _apply_preset():
+            _store()
+            i = state["idx"]
+            try:
+                state["blocks"][i] = self._strat_apply_preset(
+                    state["blocks"][i],
+                    self.STRATEGY_PRESETS[self._strat_preset_var.get()])
+                _load(i)
+                _titles()
+                lb.select_set(i)
+            except Exception as e:
+                self.dlg_error(f"Шаблон не применился: {e}")
+
+        RButton(brow, text="Применить шаблон", style="ghost",
+                command=_apply_preset).pack(side="left")
+        frow = tk.Frame(d, bg=CARD)
+        frow.pack(fill="x", padx=16, pady=(0, 14))
+
+        def _save(as_new):
+            _store()
+            blks = [b for b in (x.strip() for x in state["blocks"]) if b]
+            if not blks:
+                self.dlg_error("Нет ни одного блока")
+                return
+            nofilt = [i + 1 for i, b in enumerate(blks) if "--filter" not in b]
+            if nofilt and not self.dlg_ask(f"Блоки без --filter: {nofilt}.\nСохранить всё равно?"):
+                return
+            try:
+                wrapped = self._strat_wrap(state["prefix"], blks)
+                head = wrapped[0]
+                body = wrapped[1:]
+                with open(state["fp"], "r", encoding="utf-8", errors="ignore") as f:
+                    orig = f.read().splitlines()
+                start = next(i for i, l in enumerate(orig)
+                             if "winws.exe" in l.lower())
+                end = start
+                for i in range(start + 1, len(orig)):
+                    if orig[i].strip().lower().startswith(self._STRAT_END):
+                        break
+                    end = i
+                new_lines = orig[:start] + [head] + body + orig[end + 1:]
+                if as_new:
+                    stem, ext = os.path.splitext(os.path.basename(state["fp"]))
+                    dst = os.path.join(os.path.dirname(state["fp"]),
+                                       f"{stem} (strategy){ext}")
+                    i = 2
+                    while os.path.exists(dst):
+                        dst = os.path.join(os.path.dirname(state["fp"]),
+                                           f"{stem} (strategy {i}){ext}")
+                        i += 1
+                else:
+                    dst = state["fp"]
+                    try:
+                        shutil.copy2(dst, dst + ".bak")
+                    except Exception:
+                        pass
+                with open(dst, "w", encoding="utf-8") as f:
+                    f.write("\n".join(new_lines) + "\n")
+                log_action(f"Стратегии: {'создан ' + os.path.basename(dst) if as_new else 'сохранён ' + state['bat']}"
+                           f" ({len(blks)} блоков)", "apply")
+                self.refresh_all_static()
+                self.msg_q.put(("toast", ("Конструктор стратегий",
+                                          f"Сохранено: {os.path.basename(dst)}", GREEN)))
+                d.destroy()
+            except Exception as e:
+                self.dlg_error(f"Не удалось сохранить: {e}")
+
+        RButton(frow, text="💾 Сохранить как новый", style="accent",
+                command=lambda: _save(True)).pack(side="left", padx=(0, 8))
+        RButton(frow, text="💾 Перезаписать (.bak)", style="ghost",
+                command=lambda: _save(False) if self.dlg_ask(
+                    "Перезаписать исходный bat?\nСтарая копия — в .bak.") else None).pack(side="left", padx=(0, 8))
+        RButton(frow, text="Отмена", style="ghost",
+                command=d.destroy).pack(side="left")
 
     def on_apply_config(self, bat):
         mode = self.ask_apply_mode(bat)
@@ -6142,6 +7320,7 @@ class ZapretApp:
             save_config(self.cfg)
             msg = f"{bat} запущен (без автозагрузки)"
             log_action(f"Вручную запущен конфиг без службы: {bat}", "apply")
+            log_switch(f"разово → {bat}")
         else:
             try:
                 diag
@@ -6165,7 +7344,13 @@ class ZapretApp:
         if ok:
             self.cfg["active_config"] = bat
             save_config(self.cfg)
+            # ручной выбор отменяет план возврата watchdog
+            try:
+                self._watchdog_disarm("")
+            except Exception:
+                pass
             log_action(f"Вручную применён конфиг {bat}: {msg}", "apply")
+            log_switch(f"вручную → {bat}")
         else:
             log_action(f"Ошибка установки {bat}: {msg}", "error")
         self.msg_q.put(("toast", ("Применение конфига", f"{bat}: {msg}", GREEN if ok else RED)))
@@ -6180,6 +7365,7 @@ class ZapretApp:
     def _remove_worker(self):
         ok, msg = remove_service()
         log_action(f"Удаление службы: {msg}", "apply")
+        log_switch("служба удалена (обход выключен)")
         self.msg_q.put(("toast", ("Служба", msg, GREEN if ok else RED)))
         self.root.after(500, self.refresh_active_bar)
         self.msg_q.put(("actions_refresh", None))
@@ -6200,6 +7386,11 @@ class ZapretApp:
                    command=self.refresh_domains_list).pack(side="right", padx=(6, 0))
         RButton(row, text="💾 Сохранить", style="accent",
                    command=self.save_domain_file).pack(side="right")
+        RButton(row, text="＋ Новый", style="ghost",
+                   command=self.on_create_new_list).pack(side="right", padx=(0, 6))
+        RButton(row, text="📰 Diff", style="ghost",
+                   command=self.show_release_diff).pack(side="right", padx=(0, 6))
+        add_tooltip(row.winfo_children()[-1], "Что изменилось в списках после обновления zapret")
         mid = tk.Frame(p, bg=BG)
         mid.grid(row=1, column=0, sticky="nsew")
         mid.columnconfigure(0, weight=1)
@@ -6421,6 +7612,62 @@ class ZapretApp:
         except Exception as e:
             self.dlg_error(f"Не удалось прочитать файл: {e}")
 
+    def show_release_diff(self):
+        """Показать Diff списков после последнего обновления zapret.
+
+        Если файла diff нет — сравнить текущий lists/ с сохранённым
+        снимком (имена добавленных/удалённых/изменённых).
+        """
+        body = ""
+        try:
+            dp = self.cfg.get("last_lists_diff", "")
+            if dp and os.path.exists(dp):
+                with open(dp, "r", encoding="utf-8", errors="ignore") as f:
+                    body = f.read()
+        except Exception:
+            pass
+        if not body:
+            try:
+                old = load_lists_snapshot()
+                new = snapshot_lists(self.cfg.get("zapret_root", ""))
+                if not old:
+                    save_lists_snapshot(new)
+                    self.dlg_info("Снимок списков создан.\nПосле следующей переустановки zapret здесь будет diff.")
+                    return
+                added, removed, changed = diff_lists_snaps(old, new)
+                if not (added or removed or changed):
+                    self.dlg_info("Списки не изменились относительно снимка.")
+                    return
+                L = ["# Diff списков (снимок → сейчас)", ""]
+                if added:
+                    L.append("## Добавлены"); L += [f"+ {x}" for x in added]; L.append("")
+                if removed:
+                    L.append("## Удалены"); L += [f"− {x}" for x in removed]; L.append("")
+                if changed:
+                    L.append("## Изменены"); L += [f"~ {x}" for x in changed]
+                body = "\n".join(L)
+            except Exception as e:
+                self.dlg_error(f"Не удалось сравнить: {e}")
+                return
+        d = tk.Toplevel(self.root)
+        d.title("Diff списков")
+        d.configure(bg=CARD)
+        try:
+            d.transient(self.root)
+            d.geometry("760x520")
+        except Exception:
+            pass
+        tk.Label(d, text="📰 Что изменилось в списках", bg=CARD, fg=TEXT,
+                 font=(FONT, 12, "bold"), anchor="w").pack(fill="x", padx=16, pady=(12, 4))
+        t = tk.Text(d, bg=CARD2, fg=TEXT, font=(MONO, 9), bd=0, wrap="none",
+                    padx=10, pady=10, insertbackground=TEXT,
+                    selectbackground=ACCENT, selectforeground="white")
+        t.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+        t.insert("end", body)
+        t.configure(state="disabled")
+        RButton(d, text="Закрыть", style="accent",
+                command=d.destroy).pack(padx=16, pady=(0, 12))
+
     def show_domain_file(self):
         """Called when user clicks on a row - kept for compatibility"""
         pass
@@ -6447,6 +7694,44 @@ class ZapretApp:
         except Exception as e:
             self.dlg_error(f"Не удалось сохранить: {e}")
 
+    def on_create_new_list(self):
+        """Создать новый .txt в lists/ через меню листов."""
+        d = self._lists_dir()
+        if not d:
+            self.dlg_error("Папка lists/ не найдена — проверьте корневую папку в Настройках")
+            return
+        name = self.dlg_input("Имя файла (например, mylist-user.txt):\n"
+                              "Разрешены буквы, цифры, дефис и подчёркивание.",
+                              title="Новый список", initial="mylist-user.txt")
+        if name is None:
+            return
+        name = (name or "").strip().replace("/", "").replace("\\", "")
+        if name.lower().endswith(".disabled"):
+            name = name[:-9]
+        if not name.lower().endswith(".txt"):
+            name += ".txt"
+        bad = set(':*?"<>|')
+        if not name or name in (".txt",) or any(c in bad for c in name):
+            self.dlg_error("Некорректное имя файла")
+            return
+        fp = os.path.join(d, name)
+        if os.path.exists(fp) or os.path.exists(fp + ".disabled"):
+            self.dlg_error(f"«{name}» уже существует")
+            return
+        try:
+            with open(fp, "w", encoding="utf-8") as f:
+                f.write(f"# {name} — создан из Zapret Manager\n")
+            log_action(f"Создан список {name}", "lists")
+        except Exception as e:
+            self.dlg_error(f"Не удалось создать: {e}")
+            return
+        try:
+            self._dom_selected = name
+        except Exception:
+            pass
+        self.refresh_domains_list()
+        self.msg_q.put(("toast", ("Новый список", f"«{name}» создан", GREEN)))
+
     # ================= страница ЛОГИ =================
     def build_logs_page(self):
         p = self.pages["logs"]
@@ -6460,6 +7745,9 @@ class ZapretApp:
                  bg=CARD, fg=MUTED, font=(FONT, 9)).pack(side="left")
         RButton(row, text="🔄 Обновить", style="ghost",
                    command=self.refresh_logs_list).pack(side="right", padx=(6, 0))
+        RButton(row, text="📤 Отчёт", style="accent",
+                   command=self.export_report).pack(side="right", padx=(6, 0))
+        add_tooltip(row.winfo_children()[-1], "Выгрузить отчёт (.md): конфиг, статусы, ход проверки, журнал")
         RButton(row, text="🗑 Удалить", style="ghost",
                    command=self.delete_selected_log).pack(side="right", padx=(6, 0))
         RButton(row, text="🧹 Все", style="ghost",
@@ -6488,6 +7776,7 @@ class ZapretApp:
     def refresh_logs_list(self):
         try:
             self.logs_list.delete(0, "end")
+            self.logs_list.insert("end", SWITCHES_LABEL)
             self.logs_list.insert("end", LAST_RUN_LABEL)
             files = sorted(glob.glob(os.path.join(CHECKS_DIR, "*.json")), reverse=True)
             for fp in files:
@@ -6504,6 +7793,12 @@ class ZapretApp:
                 return
             name = self.logs_list.get(sel[0])
             self.log_view.delete("1.0", "end")
+            if name == SWITCHES_LABEL:
+                # отдельная история переключений конфигов
+                rows = read_switches(limit=500)
+                self.log_view.insert("end", "".join(rows) or "Пока пусто — переключений не было.")
+                self.log_view.see("end")
+                return
             if name == LAST_RUN_LABEL:
                 # подробный ход последней проверки (бывший «Ход проверки»)
                 if os.path.exists(LAST_RUN_LOG):
@@ -6561,6 +7856,16 @@ class ZapretApp:
             log_action("Очищен лог последнего запуска")
             self.refresh_logs_list()
             return
+        if name == SWITCHES_LABEL:
+            if not self.dlg_ask("Очистить историю переключений?"):
+                return
+            try:
+                open(SWITCHES_PATH, "w", encoding="utf-8").close()
+            except Exception:
+                pass
+            log_action("Очищена история переключений")
+            self.refresh_logs_list()
+            return
         if not self.dlg_ask(f"Удалить {name}?"):
             return
         try:
@@ -6589,6 +7894,81 @@ class ZapretApp:
         except Exception:
             pass
         self.refresh_logs_list()
+
+    def export_report(self):
+        """Выгрузить отчёт (.md): окружение, статусы, ход проверки, журнал."""
+        try:
+            fp = filedialog.asksaveasfilename(
+                title="Сохранить отчёт",
+                defaultextension=".md",
+                filetypes=[("Markdown", "*.md"), ("Текст", "*.txt")],
+                initialfile=f"zapret-report-{datetime.datetime.now():%Y%m%d-%H%M}.md")
+            if not fp:
+                return
+            L = []
+            L.append(f"# Отчёт {APP_NAME} v{APP_VERSION}")
+            L.append("")
+            L.append(f"Время: {datetime.datetime.now():%Y-%m-%d %H:%M:%S}")
+            L.append(f"Корень zapret: `{self.cfg.get('zapret_root', '')}`")
+            L.append(f"Активный конфиг: `{self.cfg.get('active_config', '') or '—'}`")
+            L.append(f"Админ: {'да' if is_admin() else 'нет'}")
+            try:
+                st = service_status()
+                L.append(f"Служба zapret: `{st.get('zapret')}` • "
+                         f"WinDivert: `{st.get('windivert')}` • "
+                         f"winws: `{'да' if st.get('winws') else 'нет'}`")
+                if st.get("strategy"):
+                    L.append(f"Стратегия службы: `{st.get('strategy')}`")
+            except Exception:
+                pass
+            try:
+                scores = self.cfg.get("best_scores", {}) or {}
+                if scores:
+                    L.append("")
+                    L.append("## Оценки конфигов (топ-10)")
+                    for k in sorted(scores, key=lambda k: scores[k],
+                                    reverse=True)[:10]:
+                        L.append(f"- `{k}` — {scores[k]}")
+            except Exception:
+                pass
+            L.append("")
+            L.append("## Ход последней проверки")
+            L.append("```")
+            try:
+                if os.path.exists(LAST_RUN_LOG):
+                    with open(LAST_RUN_LOG, "r", encoding="utf-8",
+                              errors="ignore") as f:
+                        tail = f.readlines()[-200:]
+                    L.append("".join(tail).strip() or "(пусто)")
+                else:
+                    L.append("(лог отсутствует — проверка ещё не запускалась)")
+            except Exception as e:
+                L.append(f"(не прочитать: {e})")
+            L.append("```")
+            L.append("")
+            L.append("## Журнал действий (последние 200)")
+            L.append("```")
+            try:
+                acts = read_actions(limit=200)
+                L.append("".join(acts).strip() or "(пусто)")
+            except Exception as e:
+                L.append(f"(не прочитать: {e})")
+            L.append("```")
+            L.append("")
+            L.append("## Переключения (последние 100)")
+            L.append("```")
+            try:
+                sw = read_switches(limit=100)
+                L.append("".join(sw).strip() or "(пусто)")
+            except Exception as e:
+                L.append(f"(не прочитать: {e})")
+            L.append("```")
+            with open(fp, "w", encoding="utf-8") as f:
+                f.write("\n".join(L) + "\n")
+            log_action(f"Отчёт выгружен: {os.path.basename(fp)}")
+            self.msg_q.put(("toast", ("Отчёт", "Сохранено", GREEN)))
+        except Exception as e:
+            self.dlg_error(f"Не удалось выгрузить отчёт: {e}")
 
     # ================= страница ЖУРНАЛ =================
     def build_actions_page(self):
@@ -6742,8 +8122,50 @@ class ZapretApp:
         tk.Label(grid, text="Таймаут HTTP (с):", bg=CARD, fg=MUTED, font=(FONT, 10)).grid(row=2, column=0, sticky="w", pady=4)
         self.timeout_var = tk.StringVar(value=str(self.cfg.get("check_timeout_s", 5)))
         ttk.Entry(grid, textvariable=self.timeout_var, width=8).grid(row=2, column=1, padx=8)
+        tk.Label(grid, text="Возврат watchdog к основному (мин, не меньше 5):", bg=CARD, fg=MUTED, font=(FONT, 10)).grid(row=3, column=0, sticky="w", pady=4)
+        self.wd_return_var = tk.StringVar(value=str(self.cfg.get("watchdog_return_min", 15)))
+        ttk.Entry(grid, textvariable=self.wd_return_var, width=8).grid(row=3, column=1, padx=8)
         RButton(grid, text="💾 Сохранить мониторинг", style="ghost",
-                   command=self.save_monitor).grid(row=3, column=0, pady=10, sticky="w")
+                   command=self.save_monitor).grid(row=4, column=0, pady=10, sticky="w")
+        self.sound_var = tk.BooleanVar(value=bool(self.cfg.get("sound_enabled", True)))
+        ctl = self._set_row(inner, "Звуковые уведомления",
+                            "короткий сигнал при падении и восстановлении связи")
+        Toggle(ctl, variable=self.sound_var,
+               command=self.on_sound_toggle).pack(anchor="e")
+        self.resume_var = tk.BooleanVar(value=bool(self.cfg.get("resume_check", True)))
+        ctl = self._set_row(inner, "Проверка после сна",
+                            "быстрый тест связи при пробуждении ПК")
+        Toggle(ctl, variable=self.resume_var,
+               command=self.on_resume_toggle).pack(anchor="e")
+        self.game_var = tk.BooleanVar(value=bool(self.cfg.get("game_mode", False)))
+        ctl = self._set_row(inner, "Игровой режим",
+                            "пауза мониторинга пока запущена игра")
+        Toggle(ctl, variable=self.game_var,
+               command=self.on_game_toggle).pack(anchor="e")
+        grow = tk.Frame(inner, bg=CARD)
+        grow.pack(fill="x", padx=8, pady=(0, 8))
+        tk.Label(grow, text="Процессы игр (через запятую):", bg=CARD, fg=MUTED,
+                 font=(FONT, 10)).pack(anchor="w")
+        self.game_procs_var = tk.StringVar(value=self.cfg.get("game_procs", ""))
+        ttk.Entry(grow, textvariable=self.game_procs_var, width=60).pack(
+            side="left", fill="x", expand=True, padx=(0, 8), pady=4)
+        RButton(grow, text="💾", style="ghost",
+                command=self.save_game_procs).pack(side="left")
+        add_tooltip(grow.winfo_children()[-1], "Сохранить список процессов")
+        self.buddy_var = tk.BooleanVar(value=bool(self.cfg.get("buddy_enabled", False)))
+        ctl = self._set_row(inner, "Дежурный напарник",
+                            "охраняется основной; при падении — следующий по качеству")
+        Toggle(ctl, variable=self.buddy_var,
+               command=self.on_buddy_toggle).pack(anchor="e")
+        brow2 = tk.Frame(inner, bg=CARD)
+        brow2.pack(fill="x", padx=8, pady=(0, 8))
+        self.buddy_pair_lbl = tk.Label(brow2, text="", bg=CARD, fg=MUTED,
+                                       font=(FONT, 9), anchor="w")
+        self.buddy_pair_lbl.pack(side="left", fill="x", expand=True)
+        RButton(brow2, text="Основной = активный", style="ghost",
+                command=self.buddy_assign_active).pack(side="right")
+        add_tooltip(brow2.winfo_children()[-1], "Назначить текущий активный основным")
+        self._buddy_pair_refresh()
 
     def _build_set_appear(self):
         inner = self._set_scroll(self.set_pages["appear"])
@@ -6755,6 +8177,9 @@ class ZapretApp:
         trow = tk.Frame(th, bg=CARD)
         trow.grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 4))
         self.theme_btns = {}
+        # Свои цвета кнопок тем: каждая навсегда в цвете СВОЕЙ палитры.
+        # Живой ремаппинг (apply_theme_live) их не трогает (см. _restore_theme_buttons).
+        self._theme_btn_colors = {}
         for _name in THEMES:
             _pal = THEMES[_name]
             _b = tk.Button(trow, text=_name, bg=_pal["ACCENT"], fg="white",
@@ -6764,16 +8189,20 @@ class ZapretApp:
                            command=lambda n=_name: self.pick_theme(n))
             _b.pack(side="left", padx=(0, 8))
             self.theme_btns[_name] = _b
+            self._theme_btn_colors[_name] = (_pal["ACCENT"], _pal["ACCENT_HOVER"])
         self._mark_theme_buttons()
         tk.Label(th, text="Верхняя шторка красится в цвета темы автоматически.",
                  bg=CARD, fg=MUTED, font=(FONT, 9)).grid(row=2, column=0, columnspan=2, sticky="w", pady=4)
+        self._build_custom_theme_editor(inner)
         self._section(inner, "Шрифт и масштаб").pack(anchor="w", padx=8, pady=(10, 2))
         fnt = tk.Frame(inner, bg=CARD)
         fnt.pack(fill="x", padx=8, pady=4)
         tk.Label(fnt, text="Шрифт интерфейса (сохраняется сразу):", bg=CARD, fg=MUTED, font=(FONT, 10)).grid(row=0, column=0, sticky="w", pady=4)
         self.font_var = tk.StringVar(value=self.cfg.get("ui_font", FONT))
         self.font_box = DropMenu(fnt, variable=self.font_var, values=[],
-                                 width=24, command=self.on_font_changed)
+                                 width=24, command=self.on_font_changed,
+                                 font_func=lambda v: (v, 10),
+                                 preview_selected=True)
         self.font_box.grid(row=0, column=1, padx=8, sticky="w")
         tk.Label(fnt, text="Масштаб интерфейса (сохраняется сразу):", bg=CARD, fg=MUTED, font=(FONT, 10)).grid(row=1, column=0, sticky="w", pady=4)
         self.scale_var = tk.StringVar(value=self.cfg.get("ui_scale", "Обычный"))
@@ -6783,16 +8212,17 @@ class ZapretApp:
         tk.Label(fnt, text="Моноширинный, логи (сохраняется сразу):", bg=CARD, fg=MUTED, font=(FONT, 10)).grid(row=2, column=0, sticky="w", pady=4)
         self.monofont_var = tk.StringVar(value=self.cfg.get("mono_font", MONO))
         self.monofont_box = DropMenu(fnt, variable=self.monofont_var, values=[],
-                                     width=24, command=self.on_font_changed)
+                                     width=24, command=self.on_font_changed,
+                                     font_func=lambda v: (v, 10),
+                                     preview_selected=True)
         self.monofont_box.grid(row=2, column=1, padx=8, sticky="w")
-        tk.Label(fnt, text="Шрифт и масштаб вступают в силу после перезапуска.",
+        tk.Label(fnt, text="Шрифт и масштаб применяются сразу, без перезапуска.",
                  bg=CARD, fg=MUTED, font=(FONT, 9)).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 2))
         RButton(fnt, text="↻ Перезапустить программу", style="accent",
                    command=self.restart_app).grid(row=4, column=0, pady=8, sticky="w")
         self.root.after(100, self._fill_font_boxes)
         self.silly_var = tk.BooleanVar(value=bool(self.cfg.get("silly_mode", False)))
-        ctl = self._set_row(inner, "Funny option",
-                            "телик с гифками, фон и silly-иконка")
+        ctl = self._set_row(inner, "Funny option")
         Toggle(ctl, variable=self.silly_var,
                command=self.on_silly_toggle).pack(anchor="e")
 
@@ -6868,6 +8298,11 @@ class ZapretApp:
                 log_action(f"Остановка службы при переустановке: {e}", "error")
             time.sleep(1)
             stop_winws()
+            # 1b. снимок lists/ до замены — для Diff релиза
+            try:
+                _old_snap = snapshot_lists(root)
+            except Exception:
+                _old_snap = {}
             # 2. бэкап пользовательских файлов (корень + lists/)
             tmp = _tf.mkdtemp(prefix="zapret_mgr_")
             user_files = []
@@ -6987,6 +8422,55 @@ class ZapretApp:
                 log_action(f"Раскладка конфигов после переустановки: {omsg}")
             except Exception as e:
                 log_action(f"Раскладка конфигов не удалась: {e}", "error")
+            # 6c. Diff релиза: сравнить lists/ (prev = старое, root = новое).
+            # Пользовательские файлы уже возвращены (идентичны) — в diff не попадут.
+            try:
+                import difflib as _df
+                _old_lists = os.path.join(prev, "lists")
+                _new_lists = os.path.join(root, "lists")
+                _new_snap = snapshot_lists(root)
+                _added, _removed, _changed = diff_lists_snaps(_old_snap, _new_snap)
+                save_lists_snapshot(_new_snap)
+                if _added or _removed or _changed:
+                    _parts = []
+                    if _added:
+                        _parts.append(f"+{len(_added)}: {', '.join(_added[:5])}")
+                    if _removed:
+                        _parts.append(f"−{len(_removed)}: {', '.join(_removed[:5])}")
+                    if _changed:
+                        _parts.append(f"~{len(_changed)}: {', '.join(_changed[:8])}")
+                    log_action(f"Diff списков после переустановки: {'; '.join(_parts)}", "lists")
+                    self.msg_q.put(("toast", ("Списки изменились",
+                                              "; ".join(_parts)[:240], YELLOW)))
+                    # построчный diff изменённых — в файл для кнопки «Diff релиза»
+                    try:
+                        _safe_tag = re.sub(r"[^\w.\-]+", "_", tag or "release")[:40]
+                        _dp = os.path.join(DATA_DIR, f"lists_diff_{_safe_tag}.md")
+                        _dl = [f"# Diff списков ({tag or 'релиз'})",
+                               f"Добавлены: {', '.join(_added) or '—'}",
+                               f"Удалены: {', '.join(_removed) or '—'}", ""]
+                        for _fn in _changed[:10]:
+                            try:
+                                with open(os.path.join(_old_lists, _fn), "r",
+                                          encoding="utf-8", errors="ignore") as f:
+                                    _lo = f.read().splitlines()
+                                with open(os.path.join(_new_lists, _fn), "r",
+                                          encoding="utf-8", errors="ignore") as f:
+                                    _ln = f.read().splitlines()
+                                _dl.append(f"## {_fn} ({len(_lo)} → {len(_ln)} строк)")
+                                _dl.append("```diff")
+                                _dl += list(_df.unified_diff(_lo, _ln, lineterm=""))[:400]
+                                _dl.append("```")
+                            except Exception:
+                                continue
+                        with open(_dp, "w", encoding="utf-8") as f:
+                            f.write("\n".join(_dl) + "\n")
+                        self.cfg["last_lists_diff"] = _dp
+                        save_config(self.cfg)
+                    except Exception as e:
+                        log_action(f"Файл diff списков не сохранён: {e}", "error")
+            except Exception as e:
+                log_action(f"Diff списков не удался: {e}", "error")
             _sh.rmtree(prev, ignore_errors=True)
             _sh.rmtree(tmp, ignore_errors=True)
             # 7. обновить UI
@@ -7068,19 +8552,105 @@ class ZapretApp:
         try:
             iv = max(1, int(self.interval_var.get()))
             to = min(30, max(2, int(self.timeout_var.get())))
+            try:
+                wr = max(5, int(self.wd_return_var.get()))
+            except Exception:
+                wr = 15
         except ValueError:
             self.dlg_error("Введите числа")
             return
         self.cfg["monitor_interval_min"] = iv
         self.cfg["check_timeout_s"] = to
+        self.cfg["watchdog_return_min"] = wr
+        try:
+            self.wd_return_var.set(str(wr))
+        except Exception:
+            pass
         save_config(self.cfg)
         self.engine.cfg = self.cfg
-        log_action(f"Настройки мониторинга: интервал={iv} мин, таймаут={to} c "
+        log_action(f"Настройки мониторинга: интервал={iv} мин, таймаут={to} c, "
+                   f"возврат watchdog={wr} мин "
                    f"(макс. пинг берётся с главной: {self.cfg.get('ping_threshold_ms')} мс)")
         self.monitor_stop.set()
         if self.cfg.get("monitor_enabled"):
             self.start_monitor()
         self.dlg_info("Сохранено")
+
+    def on_sound_toggle(self):
+        en = bool(self.sound_var.get())
+        self.cfg["sound_enabled"] = en
+        save_config(self.cfg)
+        log_action(f"Звуковые уведомления: {'включены' if en else 'выключены'}")
+        if en:
+            self._beep("up")
+        self.msg_q.put(("actions_refresh", None))
+
+    def on_resume_toggle(self):
+        en = bool(self.resume_var.get())
+        self.cfg["resume_check"] = en
+        save_config(self.cfg)
+        log_action(f"Проверка после сна: {'включена' if en else 'выключена'}")
+        self.msg_q.put(("actions_refresh", None))
+
+    def on_game_toggle(self):
+        en = bool(self.game_var.get())
+        self.cfg["game_mode"] = en
+        save_config(self.cfg)
+        log_action(f"Игровой режим: {'включён' if en else 'выключен'}")
+        self.msg_q.put(("actions_refresh", None))
+
+    def save_game_procs(self):
+        v = (self.game_procs_var.get() or "").strip()
+        self.cfg["game_procs"] = v
+        save_config(self.cfg)
+        try:
+            self._game_cache = None
+        except Exception:
+            pass
+        log_action(f"Список игр: {v or 'пуст'}")
+        self.dlg_info("Сохранено")
+
+    def _buddy_pair_refresh(self):
+        """Подпись пары 'основной → запасной' в настройках."""
+        try:
+            pr = self.cfg.get("buddy_primary", "")
+            fb = self.cfg.get("buddy_fallback", "")
+            if pr:
+                self.buddy_pair_lbl.config(
+                    text=f"Пара: {display_bat(pr)} → {display_bat(fb) if fb else '— подберётся при падении'}")
+            else:
+                self.buddy_pair_lbl.config(text="Пара не назначена — нажмите «Основной = активный»")
+        except Exception:
+            pass
+
+    def on_buddy_toggle(self):
+        en = bool(self.buddy_var.get())
+        if en and not self.cfg.get("buddy_primary"):
+            cur = self.cfg.get("active_config", "")
+            if not cur:
+                self.dlg_info("Сначала примените конфиг — он станет основным")
+                self.buddy_var.set(False)
+                return
+            self.cfg["buddy_primary"] = cur
+        self.cfg["buddy_enabled"] = en
+        save_config(self.cfg)
+        log_action(f"Дежурный напарник: {'включён' if en else 'выключен'}"
+                   + (f" (основной {self.cfg.get('buddy_primary')})" if en else ""))
+        self._buddy_pair_refresh()
+        self.msg_q.put(("actions_refresh", None))
+
+    def buddy_assign_active(self):
+        cur = self.cfg.get("active_config", "")
+        if not cur:
+            self.dlg_info("Нет активного конфига — примените любой из списка")
+            return
+        self.cfg["buddy_primary"] = cur
+        self.cfg["buddy_fallback"] = ""
+        save_config(self.cfg)
+        log_action(f"Напарник: основной назначен — {cur}")
+        self._buddy_pair_refresh()
+        self.refresh_active_bar()
+        self.msg_q.put(("actions_refresh", None))
 
     def _mark_theme_buttons(self):
         cur = self.theme_var.get()
@@ -7092,6 +8662,136 @@ class ZapretApp:
                     b.config(relief="flat", bd=0)
             except Exception:
                 pass
+
+    # ---------- редактор своей темы ----------
+    def _build_custom_theme_editor(self, inner):
+        """Секция 'Своя тема': 12 цветов + сохранить/экспорт/импорт/сброс."""
+        self._section(inner, "Своя тема").pack(anchor="w", padx=8, pady=(10, 2))
+        box = tk.Frame(inner, bg=CARD)
+        box.pack(fill="x", padx=8, pady=4)
+        try:
+            self._custom_pal = dict(THEMES.get(CUSTOM_THEME_NAME, THEMES["Алый"]))
+        except Exception:
+            self._custom_pal = {}
+        self._custom_swatches = {}
+        row = r = 0
+        c = 0
+        for key in THEME_KEYS:
+            cell = tk.Frame(box, bg=CARD)
+            cell.grid(row=r, column=c, sticky="w", padx=(0, 14), pady=3)
+            tk.Label(cell, text=key, bg=CARD, fg=MUTED,
+                     font=(FONT, 9), width=13, anchor="w").pack(side="left")
+            sw = tk.Button(cell, text="  ", bg=self._custom_pal.get(key, "#000000"),
+                           activebackground=self._custom_pal.get(key, "#000000"),
+                           bd=1, relief="flat", cursor="hand2", width=4,
+                           command=lambda k=key: self._custom_pick(k))
+            try:
+                sw.config(highlightbackground=BORDER)
+            except Exception:
+                pass
+            sw.pack(side="left", padx=(4, 0))
+            self._custom_swatches[key] = sw
+            c += 1
+            if c >= 3:
+                c, r = 0, r + 1
+        brow = tk.Frame(box, bg=CARD)
+        brow.grid(row=r + 1, column=0, columnspan=3, sticky="w", pady=(8, 2))
+        RButton(brow, text="💾 Сохранить тему", style="accent",
+                command=self._custom_save).pack(side="left", padx=(0, 6))
+        RButton(brow, text="📤 Экспорт", style="ghost",
+                command=self._custom_export).pack(side="left", padx=(0, 6))
+        RButton(brow, text="📥 Импорт", style="ghost",
+                command=self._custom_import).pack(side="left", padx=(0, 6))
+        RButton(brow, text="↺ Сброс", style="ghost",
+                command=self._custom_reset).pack(side="left")
+
+    def _custom_refresh_swatches(self):
+        try:
+            for k, sw in self._custom_swatches.items():
+                try:
+                    sw.configure(bg=self._custom_pal.get(k),
+                                 activebackground=self._custom_pal.get(k))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _custom_pick(self, key):
+        try:
+            got = colorchooser.askcolor(
+                color=self._custom_pal.get(key, "#FFFFFF"),
+                title=f"Своя тема — {key}")
+        except Exception as e:
+            self.dlg_error(f"Палитра не открылась: {e}")
+            return
+        if not got or not got[1]:
+            return
+        self._custom_pal[key] = got[1].upper()
+        THEMES[CUSTOM_THEME_NAME] = dict(self._custom_pal)
+        self._custom_refresh_swatches()
+        # сразу показать: переключаемся на «Свою» живьём
+        if self.theme_var.get() != CUSTOM_THEME_NAME:
+            self.theme_var.set(CUSTOM_THEME_NAME)
+        self.preview_theme()
+
+    def _custom_save(self):
+        try:
+            save_custom_themes(self._custom_pal)
+            self.cfg["custom_theme"] = dict(self._custom_pal)
+            save_config(self.cfg)
+            log_action("Своя тема сохранена")
+            self.msg_q.put(("toast", ("Своя тема", "Сохранено", GREEN)))
+        except Exception as e:
+            self.dlg_error(f"Не удалось сохранить тему: {e}")
+
+    def _custom_export(self):
+        try:
+            fp = filedialog.asksaveasfilename(
+                title="Экспорт своей темы",
+                defaultextension=".json",
+                filetypes=[("JSON", "*.json")],
+                initialfile="zapret-manager-theme.json")
+            if not fp:
+                return
+            with open(fp, "w", encoding="utf-8") as f:
+                json.dump({"name": CUSTOM_THEME_NAME, "palette": self._custom_pal},
+                          f, ensure_ascii=False, indent=2)
+            log_action(f"Тема экспортирована: {fp}")
+            self.msg_q.put(("toast", ("Своя тема", "Экспортировано", GREEN)))
+        except Exception as e:
+            self.dlg_error(f"Не удалось экспортировать: {e}")
+
+    def _custom_import(self):
+        try:
+            fp = filedialog.askopenfilename(
+                title="Импорт темы",
+                filetypes=[("JSON", "*.json")])
+            if not fp:
+                return
+            with open(fp, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            pal = (data.get("palette") or data) if isinstance(data, dict) else {}
+            for k in THEME_KEYS:
+                v = pal.get(k)
+                if isinstance(v, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", v):
+                    self._custom_pal[k] = v.upper()
+            THEMES[CUSTOM_THEME_NAME] = dict(self._custom_pal)
+            self._custom_refresh_swatches()
+            self.theme_var.set(CUSTOM_THEME_NAME)
+            self.preview_theme()
+            log_action(f"Тема импортирована: {os.path.basename(fp)}")
+        except Exception as e:
+            self.dlg_error(f"Не удалось импортировать: {e}")
+
+    def _custom_reset(self):
+        if not self.dlg_ask("Сбросить «Свою» тему к палитре «Алый»?"):
+            return
+        self._custom_pal = dict(THEMES["Алый"])
+        THEMES[CUSTOM_THEME_NAME] = dict(self._custom_pal)
+        self._custom_refresh_swatches()
+        self.theme_var.set(CUSTOM_THEME_NAME)
+        self.preview_theme()
+        log_action("Своя тема сброшена к палитре «Алый»")
 
     def pick_theme(self, name):
         if name not in THEMES:
@@ -7111,11 +8811,39 @@ class ZapretApp:
             save_config(self.cfg)
             log_action(f"Тема изменена: {name} (без перезапуска)")
 
+    def _restore_theme_buttons(self):
+        """Вернуть кнопкам тем их собственные цвета палитры.
+
+        Без этого живой ремаппинг красит их всех в цвет активной темы.
+        Свои свотчи редактора темы — тоже (их цвета произвольные).
+        """
+        try:
+            colors = getattr(self, "_theme_btn_colors", {})
+            btns = getattr(self, "theme_btns", {})
+            for name, b in btns.items():
+                try:
+                    bg, abg = colors.get(name, (None, None))
+                    if bg is None:
+                        pal = THEMES.get(name)
+                        if not pal:
+                            continue
+                        bg, abg = pal["ACCENT"], pal["ACCENT_HOVER"]
+                    b.configure(bg=bg, activebackground=abg)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            self._custom_refresh_swatches()
+        except Exception:
+            pass
+
     def apply_theme_live(self, name):
         """Перекрасить весь интерфейс без перезапуска.
 
         Цвета всех виджетов заданы из 12 констант палитры — маппим
         старое значение -> новое и обходим дерево виджетов.
+        Кнопки выбора тем пропускаем: у каждой свой цвет палитры.
         """
         old = {k: globals()[k] for k in THEME_KEYS}
         apply_theme(name)
@@ -7126,6 +8854,7 @@ class ZapretApp:
         global THEME_REMAP
         THEME_REMAP = mapping
         if not mapping:
+            self._restore_theme_buttons()
             return
         self.style_setup()
         opts = ("background", "foreground", "activebackground",
@@ -7133,19 +8862,25 @@ class ZapretApp:
                 "selectforeground", "troughcolor", "highlightbackground",
                 "highlightcolor", "insertbackground", "disabledforeground",
                 "buttonbackground")
+        try:
+            skip = set(getattr(self, "theme_btns", {}).values())
+        except Exception:
+            skip = set()
 
         def fix(w):
             try:
-                for opt in opts:
-                    try:
-                        cur = w.cget(opt)
-                    except Exception:
-                        continue
-                    if isinstance(cur, str) and cur.lower() in mapping:
+                # кнопки тем — не трогаем вообще (ни bg, ни activebackground)
+                if w not in skip:
+                    for opt in opts:
                         try:
-                            w.configure(**{opt: mapping[cur.lower()]})
+                            cur = w.cget(opt)
                         except Exception:
-                            pass
+                            continue
+                        if isinstance(cur, str) and cur.lower() in mapping:
+                            try:
+                                w.configure(**{opt: mapping[cur.lower()]})
+                            except Exception:
+                                pass
             except Exception:
                 pass
             try:
@@ -7157,6 +8892,11 @@ class ZapretApp:
         fix(self.root)
         try:
             tint_native_caption(self.root)
+        except Exception:
+            pass
+        self._restore_theme_buttons()
+        try:
+            self._paint_gradients()
         except Exception:
             pass
         self._repaint_combo_popups()
@@ -7216,20 +8956,102 @@ class ZapretApp:
             pass
 
     def on_font_changed(self):
-        """Шрифты сохраняются сразу при выборе; перезапуск — по вопросу."""
+        """Шрифты и масштаб сохраняются сразу и применяются живьём."""
         new_font = (self.font_var.get() or "").strip() or "Trebuchet MS"
         new_scale = self.scale_var.get() if self.scale_var.get() in UI_SCALES else "Крупный"
         new_mono = (self.monofont_var.get() or "").strip() or "Consolas"
         if (new_font == self.cfg.get("ui_font") and new_scale == self.cfg.get("ui_scale")
                 and new_mono == self.cfg.get("mono_font")):
             return
+        old_font = self.cfg.get("ui_font", FONT)
+        old_mono = self.cfg.get("mono_font", MONO)
         self.cfg["ui_font"] = new_font
         self.cfg["ui_scale"] = new_scale
         self.cfg["mono_font"] = new_mono
         save_config(self.cfg)
-        log_action(f"Шрифты: {new_font} / {new_scale} / {new_mono} — нужен перезапуск")
-        if self.dlg_ask("Сохранено. Перезапустить программу сейчас?"):
-            self.restart_app()
+        self._apply_fonts_live(new_font, new_mono, new_scale, old_font, old_mono)
+        log_action(f"Шрифты применены живьём: {new_font} / {new_scale} / {new_mono}")
+        self.msg_q.put(("toast", ("Оформление", "Шрифт и масштаб применены", GREEN)))
+
+    def _apply_fonts_live(self, new_font, new_mono, new_scale, old_font, old_mono):
+        """Переключить шрифты/масштаб без перезапуска.
+
+        1) globals FONT/MONO + tk scaling + ttk-стили;
+        2) обход виджетов: семейство old -> new (размер/начертание сохраняем);
+        3) кастомные виджеты (RButton/Segmented) хранят шрифт — обновить и перерисовать.
+        """
+        global FONT, MONO
+        FONT, MONO = new_font, new_mono
+        try:
+            base = float(getattr(self.root, "_base_scaling", 0) or 0)
+            if base <= 0:
+                base = float(self.root.tk.call("tk", "scaling"))
+                self.root._base_scaling = base
+            self.root.tk.call("tk", "scaling",
+                              base * UI_SCALES.get(new_scale, 1.0))
+        except Exception:
+            pass
+        try:
+            self.style_setup()
+        except Exception:
+            pass
+
+        def _swap(widget):
+            try:
+                cur = widget.cget("font")
+            except Exception:
+                cur = None
+            if cur is not None:
+                try:
+                    f = tkfont.Font(font=cur)
+                    fam = f.actual("family")
+                except Exception:
+                    fam = None
+                target = None
+                if fam == old_font:
+                    target = new_font
+                elif fam == old_mono:
+                    target = new_mono
+                if target is not None and fam != target:
+                    try:
+                        a = f.actual()
+                        style = (("bold" if a.get("weight") == "bold" else "")
+                                 + (" italic" if a.get("slant") == "italic" else ""))
+                        widget.configure(font=(target, a.get("size", 10), style.strip() or "normal")
+                                         if style.strip() else (target, a.get("size", 10)))
+                    except Exception:
+                        try:
+                            widget.configure(font=(target, 10))
+                        except Exception:
+                            pass
+            try:
+                for ch in widget.winfo_children():
+                    _swap(ch)
+            except Exception:
+                pass
+
+        try:
+            _swap(self.root)
+        except Exception:
+            pass
+        # кастомные виджеты: обновить запомненные шрифты и перерисовать
+        try:
+            for w in list(THEMED):
+                try:
+                    if hasattr(w, "_font") and isinstance(w._font, (tuple, list)):
+                        parts = list(w._font)
+                        if parts and parts[0] in (old_font, old_mono):
+                            parts[0] = new_font if parts[0] == old_font else new_mono
+                            w._font = tuple(parts)
+                    w.apply_theme()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            tint_native_caption(self.root)
+        except Exception:
+            pass
 
     def restart_app(self):
         log_action("Перезапуск приложения для применения вида")
@@ -7242,6 +9064,12 @@ class ZapretApp:
     # ---------- static ----------
     def refresh_all_static(self):
         cfgs = list_configs(self.cfg.get("zapret_root", ""))
+        # избранное — всегда сверху
+        try:
+            favs = set(self.cfg.get("fav_configs", []) or [])
+        except Exception:
+            favs = set()
+        cfgs = sorted(cfgs, key=lambda b: (0 if b in favs else 1, b.lower()))
         # сохранить галочки пользователя (иначе обновление списка во время
         # проверки сбрасывало бы выбор и казалось, что «окно конфигов пропало»)
         try:
@@ -7257,8 +9085,17 @@ class ZapretApp:
             self.cfg_vars[bat] = v
             row = tk.Frame(self.cfg_checks, bg=CARD)
             row.pack(fill="x", anchor="w", pady=1)
+            star = tk.Button(row, text="★" if bat in favs else "☆",
+                             bg=CARD, fg=YELLOW if bat in favs else MUTED,
+                             font=(FONT, 10), bd=0, cursor="hand2",
+                             activebackground=CARD2, activeforeground=YELLOW,
+                             width=2,
+                             command=lambda b=bat: self.on_fav_toggle(b))
+            star.pack(side="left")
+            add_tooltip(star, "В избранное (закрепить сверху)")
             lbl = tk.Label(row, text=display_bat(bat), bg=CARD, fg=TEXT,
-                           font=(FONT, 10), anchor="w", cursor="hand2")
+                           font=(FONT, 10, "bold" if bat in favs else "normal"),
+                           anchor="w", cursor="hand2")
             lbl.pack(side="left", fill="x", expand=True, padx=(2, 0))
             tg = Toggle(row, variable=v)
             tg.pack(side="left", padx=4)
@@ -7277,6 +9114,11 @@ class ZapretApp:
 
             lbl.bind("<Button-1>", _flip, add="+")
             row.bind("<Button-1>", _flip, add="+")
+            # даблклик — сразу применить конфиг
+            lbl.bind("<Double-Button-1>",
+                     lambda _e, b=bat: self.on_apply_config(b), add="+")
+            row.bind("<Double-Button-1>",
+                     lambda _e, b=bat: self.on_apply_config(b), add="+")
         if not cfgs:
             tk.Label(self.cfg_checks, text="⚠ Конфиги не найдены", bg=CARD, fg=YELLOW,
                      font=(FONT, 10)).pack(anchor="w")
@@ -7290,11 +9132,269 @@ class ZapretApp:
             pass
         self.refresh_active_bar()
 
+    def on_fav_toggle(self, bat):
+        """Звёздочка избранного: закрепить конфиг сверху списка."""
+        try:
+            favs = list(self.cfg.get("fav_configs", []) or [])
+            if bat in favs:
+                favs.remove(bat)
+                log_action(f"Убран из избранного: {bat}")
+            else:
+                favs.append(bat)
+                log_action(f"В избранном: {bat}")
+            self.cfg["fav_configs"] = favs
+            save_config(self.cfg)
+            self.refresh_all_static()
+        except Exception:
+            pass
+
     def ask_zapret_root_first(self):
         if self.dlg_ask("Не найдена папка zapret.\nВыбрать корневую папку (где лежат general*.bat) сейчас?"):
             self.show_page("settings")
             self.browse_root()
             self.save_root()
+
+    # ================= мастер первой настройки =================
+    def _wizard_needs(self):
+        """Мастер нужен свежичку: папки нет или ни одной оценки конфигов."""
+        try:
+            if self.cfg.get("wizard_done"):
+                return False
+            if not os.path.isdir(self.cfg.get("zapret_root", "")):
+                return True
+            return not (self.cfg.get("best_scores") or {})
+        except Exception:
+            return False
+
+    def _maybe_start_wizard(self):
+        try:
+            if not self._wizard_needs():
+                # обновленцы мастера не видят, но тур — да
+                self.root.after(2500, self._maybe_start_tour)
+                return
+            if getattr(self, "_wiz_open", False):
+                return
+            self._wiz_open = True
+            self.open_wizard()
+        except Exception:
+            pass
+
+    def _wizard_done(self, wiz):
+        try:
+            self._wiz_open = False
+            self.cfg["wizard_done"] = True
+            save_config(self.cfg)
+        except Exception:
+            pass
+        try:
+            wiz.destroy()
+        except Exception:
+            pass
+        try:
+            self._maybe_start_tour()
+        except Exception:
+            pass
+
+    def open_wizard(self):
+        """Мастер: 1) папка → 2) проверка → 3) применить. Без install.bat."""
+        st = {"step": 0, "root": self.cfg.get("zapret_root", ""),
+              "shortcut": tk.BooleanVar(value=True), "poll": None}
+        wiz = tk.Toplevel(self.root)
+        wiz.title("Первый запуск — настройка")
+        wiz.configure(bg=CARD)
+        try:
+            wiz.transient(self.root)
+            wiz.geometry("600x440")
+            wiz.resizable(False, False)
+        except Exception:
+            pass
+        tk.Label(wiz, text="🔥 Быстрая настройка", bg=CARD, fg=TEXT,
+                 font=(FONT, 14, "bold"), anchor="w").pack(fill="x", padx=22, pady=(16, 2))
+        self._wiz_sub = tk.Label(wiz, text="", bg=CARD, fg=MUTED, font=(FONT, 10),
+                                 anchor="w")
+        self._wiz_sub.pack(fill="x", padx=22)
+        body = tk.Frame(wiz, bg=CARD)
+        body.pack(fill="both", expand=True, padx=22, pady=12)
+        nav = tk.Frame(wiz, bg=CARD)
+        nav.pack(fill="x", padx=22, pady=(0, 16))
+        back = RButton(nav, text="← Назад", style="ghost", command=lambda: _go(-1))
+        nxt = RButton(nav, text="Далее →", style="accent", command=lambda: _go(1))
+        back.pack(side="left")
+        RButton(nav, text="Закрыть", style="ghost",
+                command=lambda: self._wizard_done(wiz)).pack(side="right")
+        nxt.pack(side="right", padx=(0, 8))
+        pages = []
+
+        # --- шаг 1: папка ---
+        p1 = tk.Frame(body, bg=CARD)
+        tk.Label(p1, text="Где лежит zapret (general.bat, service.bat, bin/, lists/)?",
+                 bg=CARD, fg=TEXT, font=(FONT, 10), anchor="w",
+                 wraplength=520, justify="left").pack(fill="x", pady=(0, 8))
+        st["var"] = tk.StringVar(value=st["root"])
+        erow = tk.Frame(p1, bg=CARD)
+        erow.pack(fill="x", pady=(0, 8))
+        ttk.Entry(erow, textvariable=st["var"], width=48).pack(side="left", fill="x",
+                                                               expand=True, padx=(0, 8))
+
+        def _browse():
+            d = filedialog.askdirectory(title="Корневая папка zapret")
+            if d:
+                st["var"].set(d)
+
+        def _autofind():
+            for cand in (os.path.join(os.path.expanduser("~"), "Desktop",
+                                      "zapret-discord-youtube-main"),
+                         r"D:\Desktop\zapret-discord-youtube-main",
+                         r"C:\zapret", r"D:\zapret"):
+                if os.path.isdir(cand):
+                    st["var"].set(cand)
+                    return
+            self.dlg_info("Не нашёл сам — укажите папку вручную")
+
+        RButton(erow, text="📁", style="ghost", command=_browse).pack(side="left", padx=(0, 6))
+        RButton(erow, text="🔍 Найти", style="ghost", command=_autofind).pack(side="left")
+        tk.Checkbutton(p1, text="Ярлык на рабочем столе",
+                       variable=st["shortcut"], bg=CARD, fg=TEXT,
+                       font=(FONT, 10), anchor="w",
+                       activebackground=CARD, selectcolor=ACCENT).pack(anchor="w", pady=4)
+        tk.Label(p1, text="Нет папки? Кнопка «Переустановить Zapret» в Настройках → "
+                          "Папка скачает свежий релиз сама.",
+                 bg=CARD, fg=MUTED, font=(FONT, 9), wraplength=520,
+                 justify="left").pack(fill="x")
+        pages.append(("Шаг 1/3 — папка zapret", p1))
+
+        # --- шаг 2: проверка ---
+        p2 = tk.Frame(body, bg=CARD)
+        tk.Label(p2, text="Прогоняю все конфиги и ставлю оценки. Это несколько минут — "
+                          "можно свернуть окно, я позову тостом.",
+                 bg=CARD, fg=TEXT, font=(FONT, 10), wraplength=520,
+                 justify="left").pack(fill="x", pady=(0, 10))
+        st["status"] = tk.Label(p2, text="Нажмите «Запустить проверку».",
+                                bg=CARD, fg=MUTED, font=(FONT, 10))
+        st["status"].pack(anchor="w", pady=(0, 10))
+        RButton(p2, text="▶ Запустить проверку", style="accent",
+                command=lambda: _wiz_run_check()).pack(anchor="w")
+        pages.append(("Шаг 2/3 — проверка конфигов", p2))
+
+        # --- шаг 3: применить ---
+        p3 = tk.Frame(body, bg=CARD)
+        st["win"] = tk.Label(p3, text="", bg=CARD, fg=TEXT, font=(FONT, 11, "bold"),
+                             wraplength=520, justify="left")
+        st["win"].pack(fill="x", pady=(0, 10))
+        tk.Label(p3, text="Применение ставит службу Windows с автозагрузкой — "
+                          "обход будет работать сам после перезагрузки.",
+                 bg=CARD, fg=MUTED, font=(FONT, 9), wraplength=520,
+                 justify="left").pack(fill="x", pady=(0, 10))
+        RButton(p3, text="✔ Применить лучший и завершить", style="accent",
+                command=lambda: _wiz_apply()).pack(anchor="w", pady=(0, 8))
+        RButton(p3, text="Завершить без применения", style="ghost",
+                command=lambda: self._wizard_done(wiz)).pack(anchor="w")
+        pages.append(("Шаг 3/3 — применить лучший", p3))
+
+        def _show():
+            for pg in pages:
+                pg[1].pack_forget()
+            self._wiz_sub.config(text=pages[st["step"]][0])
+            pages[st["step"]][1].pack(fill="both", expand=True)
+            back.set_enabled(st["step"] > 0)
+            nxt.set_enabled(st["step"] < 2)
+            if st["step"] == 2:
+                _wiz_winner()
+
+        def _go(d):
+            if d > 0 and st["step"] == 0 and not _wiz_save_root():
+                return
+            st["step"] = max(0, min(2, st["step"] + d))
+            _show()
+
+        def _wiz_save_root():
+            v = (st["var"].get() or "").strip()
+            if not os.path.isdir(v):
+                self.dlg_error("Папка не существует")
+                return False
+            if not (os.path.exists(os.path.join(v, "service.bat"))
+                    or glob.glob(os.path.join(v, "*.bat"))):
+                if not self.dlg_ask("Похоже, это не папка zapret (.bat нет). Всё равно дальше?"):
+                    return False
+            self.cfg["zapret_root"] = v
+            save_config(self.cfg)
+            self.engine.cfg = self.cfg
+            try:
+                self.root_var.set(v)
+            except Exception:
+                pass
+            try:
+                moved, omsg = organize_configs(v)
+                log_action(f"Раскладка конфигов (мастер): {omsg}")
+            except Exception:
+                pass
+            self.refresh_all_static()
+            self.refresh_active_bar()
+            log_action(f"Мастер: корневая папка {v}")
+            return True
+
+        def _wiz_run_check():
+            if self.engine.running:
+                return
+            try:
+                st["status"].config(text="Проверка идёт… окно можно свернуть.", fg=YELLOW)
+            except Exception:
+                pass
+            self.start_check_all()
+            _wiz_poll()
+
+        def _wiz_poll():
+            try:
+                if self.engine.running:
+                    try:
+                        st["status"].config(text="Проверка идёт…", fg=YELLOW)
+                    except Exception:
+                        pass
+                    st["poll"] = self.root.after(1500, _wiz_poll)
+                    return
+                n = len(self.cfg.get("best_scores", {}) or {})
+                try:
+                    st["status"].config(
+                        text=f"Готово! Оценок: {n}. Жмите «Далее →».", fg=GREEN)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        def _wiz_winner():
+            try:
+                scores = self.cfg.get("best_scores", {}) or {}
+                if scores:
+                    w = max(scores, key=lambda k: scores[k])
+                    st["win"].config(text=f"🏆 Лучший: {display_bat(w)}  (score={scores[w]})")
+                    st["winner"] = w
+                else:
+                    st["win"].config(text="Оценок нет — проверьте позже вручную.")
+                    st["winner"] = ""
+            except Exception:
+                pass
+
+        def _wiz_apply():
+            w = st.get("winner", "")
+            if not w:
+                self.dlg_info("Нечего применять — завершаю без службы")
+                self._wizard_done(wiz)
+                return
+            if st["shortcut"].get():
+                try:
+                    ok, m = create_desktop_shortcut()
+                    log_action(f"Мастер: ярлык: {m}")
+                except Exception:
+                    pass
+            self._wizard_done(wiz)
+            self.on_apply_config(w)
+
+        self._wiz_show = _show
+        _show()
+        try:
+            wiz.protocol("WM_DELETE_WINDOW", lambda: self._wizard_done(wiz))
+        except Exception:
+            pass
 
     # ================= мониторинг =================
     def start_monitor(self):
@@ -7306,6 +9406,32 @@ class ZapretApp:
         self.monitor_thread.start()
         log_action("Мониторинг запущен")
 
+    def _game_running(self):
+        """Запущена ли игра из списка (кэш 60 с, один вызов tasklist)."""
+        try:
+            now = time.time()
+            cached = getattr(self, "_game_cache", None)
+            if cached and now - cached[0] < 60:
+                return cached[1]
+            procs = [p.strip().lower() for p in
+                     str(self.cfg.get("game_procs", "") or "").split(",")
+                     if p.strip()]
+            found = ""
+            if procs:
+                rc, out = run_cmd(["tasklist", "/FO", "CSV", "/NH"], timeout=10)
+                if rc == 0:
+                    low = out.lower()
+                    for p in procs:
+                        if not p.endswith(".exe"):
+                            p += ".exe"
+                        if f'"{p}"' in low or f"\n{p}," in low or low.startswith(f"{p},"):
+                            found = p
+                            break
+            self._game_cache = (now, found)
+            return found
+        except Exception:
+            return ""
+
     def _monitor_loop(self):
         # первая быстрая проверка через 30 c, дальше по интервалу
         time.sleep(30)
@@ -7316,6 +9442,24 @@ class ZapretApp:
                 if self.engine.running:
                     time.sleep(20)
                     continue
+                # игровой режим: не дёргать сеть пока идёт игра
+                if self.cfg.get("game_mode"):
+                    g = self._game_running()
+                    if g:
+                        if not getattr(self, "_game_noticed", False):
+                            self._game_noticed = True
+                            log_action(f"Игровой режим: {g} запущена — мониторинг на паузе", "monitor")
+                        time.sleep(60)
+                        continue
+                    if getattr(self, "_game_noticed", False):
+                        self._game_noticed = False
+                        log_action("Игровой режим: игра закрыта — мониторинг возобновлён", "monitor")
+                # умный watchdog: пора попробовать вернуться к основному?
+                try:
+                    if self._wd_primary and time.time() >= self._wd_due:
+                        self._watchdog_try_return()
+                except Exception as e:
+                    log_action(f"Возврат watchdog: {e}", "error")
                 st = service_status()
                 # мониторим только если что-то активно
                 if st["zapret"] not in ("RUNNING",) and not st["winws"]:
@@ -7330,12 +9474,106 @@ class ZapretApp:
             # сон с возможностью ранней остановки (экономит CPU: один wait вместо цикла)
             self.monitor_stop.wait(iv)
 
+    def _watchdog_arm(self, primary, fallback):
+        """Запомнить откат и запланировать попытку возврата к основному."""
+        try:
+            self._wd_primary = primary or ""
+            self._wd_fallback = fallback or ""
+            mins = max(5, int(self.cfg.get("watchdog_return_min", 15)))
+            self._wd_due = time.time() + mins * 60
+            self.cfg["watchdog_primary"] = self._wd_primary
+            save_config(self.cfg)
+            log_action(f"Watchdog: возврат к {primary} через ~{mins} мин", "autoswitch")
+        except Exception:
+            pass
+
+    def _watchdog_disarm(self, why=""):
+        try:
+            if self._wd_primary and why:
+                log_action(f"Watchdog: {why}", "autoswitch")
+            self._wd_primary = ""
+            self._wd_fallback = ""
+            self._wd_due = 0.0
+            if self.cfg.get("watchdog_primary"):
+                self.cfg["watchdog_primary"] = ""
+                save_config(self.cfg)
+        except Exception:
+            pass
+
+    def _watchdog_try_return(self):
+        """Попытка вернуться с запасного на основной конфиг.
+
+        Ставим основной, ждём, проверяем. Если снова плохо — откатываемся
+        на запасной и переносим следующую попытку. Всё с логами и тостами.
+        """
+        primary, fallback = self._wd_primary, self._wd_fallback
+        if not primary:
+            return
+        cur = self.cfg.get("active_config", "")
+        if cur == primary:
+            self._watchdog_disarm("уже на основном — снят")
+            return
+        log_action(f"Watchdog: пробую вернуться {cur} → {primary}", "autoswitch")
+        self.msg_q.put(("toast", ("🔄 Watchdog",
+                                  f"Пробую вернуться на {display_bat(primary)}…", YELLOW)))
+        ok, m = install_service(self.cfg["zapret_root"], primary)
+        if not ok:
+            log_action(f"Watchdog: возврат не удался ({m}) — остаёмся на запасном", "error")
+            mins = max(5, int(self.cfg.get("watchdog_return_min", 15)))
+            self._wd_due = time.time() + mins * 60
+            return
+        self.cfg["active_config"] = primary
+        save_config(self.cfg)
+        time.sleep(45)  # дать winws устаканиться
+        try:
+            res = self.engine.test_targets_current()
+        except Exception:
+            res = {"blocked": False}
+        if res.get("blocked"):
+            log_action(f"Watchdog: {display_bat(primary)} всё ещё сбоит — возврат на запасной",
+                       "autoswitch")
+            ok2, m2 = install_service(self.cfg["zapret_root"], fallback or cur)
+            if ok2:
+                self.cfg["active_config"] = fallback or cur
+                save_config(self.cfg)
+                log_switch(f"watchdog откат → {fallback or cur}")
+            mins = max(5, int(self.cfg.get("watchdog_return_min", 15)))
+            self._wd_due = time.time() + mins * 60
+            self.msg_q.put(("toast", ("🔄 Watchdog",
+                                      "Основной всё ещё сбоит — вернулся на запасной.", YELLOW)))
+            self._beep("down")
+        else:
+            self._watchdog_disarm(f"вернулся на основной {display_bat(primary)}")
+            log_switch(f"watchdog возврат → {primary}")
+            self.msg_q.put(("toast", ("✅ Watchdog",
+                                      f"Основной {display_bat(primary)} снова в строю!", GREEN)))
+            self._beep("up")
+        try:
+            self.root.after(500, self.refresh_active_bar)
+        except Exception:
+            pass
+        self.msg_q.put(("actions_refresh", None))
+
     def on_blocked_detected(self, res):
         cur = self.cfg.get("active_config", "") or service_status().get("strategy", "")
         msg = (f"Обнаружены проблемы: HTTP fail={res['fail_http']} ok={res['ok_http']}, "
                f"плохой пинг={res['bad_ping']}. Текущий: {cur or 'неизвестен'}. "
                f"Порог пинга {self.cfg.get('ping_threshold_ms')} мс.")
         log_action(msg, "monitor")
+        # дежурный напарник: охраняется только основной; на запасном — ждём
+        # (возврат на основной делает watchdog), лишнего не переключаем
+        if self.cfg.get("buddy_enabled") and self.cfg.get("buddy_primary"):
+            pr = self.cfg.get("buddy_primary")
+            if cur != pr:
+                if not getattr(self, "_buddy_skip_noticed", False):
+                    self._buddy_skip_noticed = True
+                    log_action(f"Напарник: {display_bat(cur)} сбоит, но охраняется "
+                               f"только {display_bat(pr)} — жду watchdog", "autoswitch")
+                return
+            try:
+                self._buddy_skip_noticed = False
+            except Exception:
+                pass
         # ищем замену среди известных оценок
         scores = dict(self.cfg.get("best_scores", {}))
         # исключить текущий
@@ -7345,20 +9583,34 @@ class ZapretApp:
             log_action("Нет данных о других конфигах — запустите полную проверку", "monitor")
             self.msg_q.put(("toast", ("⚠ Проблемы с соединением",
                                       "Нет данных для автопереключения. Запустите проверку конфигов.", RED)))
+            self._beep("down")
             return
         nxt = max(scores, key=lambda k: scores[k])
         log_action(f"Автопереключение: {cur} → {nxt} (score={scores[nxt]})", "autoswitch")
         ok, m = install_service(self.cfg["zapret_root"], nxt)
         if ok:
             self.cfg["active_config"] = nxt
+            # напарник запомнил запасного по качеству последней проверки
+            if self.cfg.get("buddy_enabled") and self.cfg.get("buddy_primary"):
+                self.cfg["buddy_fallback"] = nxt
+                try:
+                    self._buddy_pair_refresh()
+                except Exception:
+                    pass
             save_config(self.cfg)
+            # вооружить умный watchdog: позже попробуем вернуться на cur
+            if cur and cur != nxt:
+                self._watchdog_arm(cur, nxt)
             log_action(f"Автопереключение выполнено: теперь активен {nxt}", "autoswitch")
+            log_switch(f"авто: {cur or '?'} → {nxt}")
             self.msg_q.put(("toast", ("🔄 Автопереключение",
                                       f"{cur} сбоил (пинг/DPI).\nВключён {nxt}.", GREEN)))
+            self._beep("up")
         else:
             log_action(f"Автопереключение не удалось ({nxt}): {m}", "error")
             self.msg_q.put(("toast", ("⚠ Не удалось переключить",
                                       f"{nxt}: {m}", RED)))
+            self._beep("down")
         self.root.after(500, self.refresh_active_bar)
         self.msg_q.put(("actions_refresh", None))
 
@@ -7445,8 +9697,9 @@ def main():
         pass
     # масштаб интерфейса (шрифты + отступы пропорционально, без лишних затрат)
     try:
+        cur = float(root.tk.call("tk", "scaling"))
+        root._base_scaling = cur
         if abs(_scale - 1.0) > 0.01:
-            cur = float(root.tk.call("tk", "scaling"))
             root.tk.call("tk", "scaling", cur * _scale)
     except Exception:
         pass
