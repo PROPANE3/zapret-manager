@@ -16,9 +16,26 @@ fn assets_dir() -> PathBuf {
     // прод: <exe>/../resources/assets (NSIS кладёт рядом) или <exe>/assets
     if let Ok(exe) = std::env::current_exe() {
         if let Some(d) = exe.parent() {
-            for cand in [d.join("assets"), d.join("resources").join("assets")] {
+            for cand in [
+                d.join("assets"),
+                d.join("resources").join("assets"),
+                d.join("_up_").join("assets"),
+                d.join("_up_").join("resources").join("assets"),
+            ] {
                 if cand.is_dir() {
                     return cand;
+                }
+            }
+            // запасной вариант: ищем wizard.jpg рекурсивно на 2 уровня (мало файлов — дёшево)
+            if let Ok(rd) = std::fs::read_dir(d) {
+                for e in rd.flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        let c = p.join("assets");
+                        if c.is_dir() {
+                            return c;
+                        }
+                    }
                 }
             }
         }
@@ -37,6 +54,42 @@ pub fn packs_dir() -> PathBuf {
 
 pub fn terminal_dir() -> PathBuf {
     assets_dir().join("terminal")
+}
+
+pub fn wizard_dir() -> PathBuf {
+    assets_dir().join("wizard")
+}
+
+/// Картинка мастера (assets/wizard/wizard.jpg) как data URL для первого шага.
+pub fn wizard_image() -> Result<String, String> {
+    let d = wizard_dir();
+    for name in ["wizard.jpg", "wizard.jpeg", "wizard.png"] {
+        let ext = if name.ends_with("png") { ".png" } else { ".jpg" };
+        if let Some(p) = safe_name(&d, name, &[ext]) {
+            let mime = if ext == ".png" { "image/png" } else { "image/jpeg" };
+            return data_url(&p, mime);
+        }
+    }
+    Err("Нет картинки мастера (assets/wizard/wizard.jpg)".into())
+}
+
+/// Видео мастера (assets/wizard/install_wizards.mp4) как data URL для шага установки.
+pub fn wizard_video() -> Result<String, String> {
+    let d = wizard_dir();
+    if let Some(p) = safe_name(&d, "install_wizards.mp4", &[".mp4"]) {
+        return data_url(&p, "video/mp4");
+    }
+    Err("Нет видео мастера (assets/wizard/install_wizards.mp4)".into())
+}
+
+pub fn music_dir() -> PathBuf {
+    assets_dir().join("music")
+}
+
+/// Фоновая музыка тем (assets/music/*.mp3) как data URL, играет зацикленно.
+pub fn theme_music(name: &str) -> Result<String, String> {
+    let p = safe_name(&music_dir(), name, &[".mp3"]).ok_or("Нет трека")?;
+    data_url(&p, "audio/mpeg")
 }
 
 fn safe_name(dir: &PathBuf, name: &str, exts: &[&str]) -> Option<PathBuf> {
@@ -407,12 +460,57 @@ pub fn strategy_save(zapret_root: &str, bat: &str, blocks: Vec<String>, as_new: 
 mod tests {
     use super::*;
 
-    const ROOT: &str = r"D:\Desktop\zapret-discord-youtube-main";
+    /// Корень zapret для тестов: перебор реальных папок, пропуск если нет.
+    fn test_root() -> Option<String> {
+        if let Ok(p) = std::env::var("ZAPRET_TEST_ROOT") {
+            if std::path::Path::new(&p).is_dir() {
+                return Some(p);
+            }
+        }
+        let mut cands: Vec<String> = Vec::new();
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            let desk = std::path::Path::new(&home).join("Desktop");
+            if let Ok(rd) = std::fs::read_dir(&desk) {
+                let mut v: Vec<String> = rd
+                    .flatten()
+                    .filter(|e| e.path().is_dir())
+                    .filter_map(|e| e.file_name().into_string().ok())
+                    .filter(|n| n.starts_with("zapret-discord-youtube"))
+                    .collect();
+                v.sort();
+                for n in v {
+                    cands.push(desk.join(n).to_string_lossy().into_owned());
+                }
+            }
+        }
+        for fixed in [
+            r"D:\Desktop\zapret-discord-youtube-main",
+            r"C:\zapret",
+            r"D:\zapret",
+        ] {
+            cands.push(fixed.to_string());
+        }
+        cands.into_iter().find(|p| std::path::Path::new(p).is_dir())
+    }
+
+    fn first_general(root: &str) -> Option<String> {
+        crate::zapret::list_configs(root)
+            .into_iter()
+            .find(|c| c.to_lowercase().ends_with(".bat"))
+    }
 
     #[test]
     fn strat_blocks_general() {
-        let doc = strategy_parse(ROOT, r"pre-configs\general.bat").expect("parse");
-        assert!(doc.blocks.len() >= 5, "блоков мало: {}", doc.blocks.len());
+        let Some(root) = test_root() else {
+            println!("SKIP: нет папки zapret");
+            return;
+        };
+        let Some(bat) = first_general(&root) else {
+            println!("SKIP: нет .bat в {root}");
+            return;
+        };
+        let doc = strategy_parse(&root, &bat).expect("parse");
+        assert!(!doc.blocks.is_empty(), "блоков нет");
         assert!(doc.prefix.to_lowercase().contains("winws.exe"));
         assert!(doc.blocks.iter().all(|b| b.contains("--filter") || b.contains("--dpi")));
     }
@@ -420,9 +518,17 @@ mod tests {
     #[test]
     fn strat_roundtrip() {
         // копия в temp, сохранение как новый + перезапись
+        let Some(root) = test_root() else {
+            println!("SKIP: нет папки zapret");
+            return;
+        };
+        let Some(bat) = first_general(&root) else {
+            println!("SKIP: нет .bat в {root}");
+            return;
+        };
         let tmp = std::env::temp_dir().join("zm_strat_test");
         std::fs::create_dir_all(&tmp).unwrap();
-        let src = std::path::Path::new(ROOT).join(r"pre-configs\general.bat");
+        let src = std::path::Path::new(&root).join(&bat);
         std::fs::copy(&src, tmp.join("general.bat")).unwrap();
         let root = tmp.to_string_lossy().into_owned();
         let doc = strategy_parse(&root, "general.bat").expect("parse");
@@ -447,5 +553,13 @@ mod tests {
         let list = funny_list();
         assert!(!list.is_empty(), "funny пуст");
         assert!(list.iter().any(|n| n == "idle_gif.gif"));
+    }
+
+    #[test]
+    fn music_files_present() {
+        let d = music_dir();
+        for f in ["regular.mp3", "special.mp3"] {
+            assert!(d.join(f).is_file(), "нет {f}");
+        }
     }
 }

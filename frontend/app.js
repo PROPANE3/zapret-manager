@@ -1,9 +1,27 @@
 /* Zapret Manager v2 frontend: вызовы Rust-команд + рендер. Без сборки. */
-const invoke = window.__TAURI__.core.invoke;
-const listen = window.__TAURI__.event.listen;
+/* ВАЖНО: window.__TAURI__ резолвится ЛЕНИВО. Причины:
+   1) без "withGlobalTauri": true в tauri.conf его нет вообще;
+   2) на Windows init-скрипт WebView2 может прийти позже топ-уровня этого файла.
+   Поэтому никакого чтения API в момент парсинга — только в момент вызова. */
+function tauriApi() { return window.__TAURI__ || null; }
+function tauriInvoke() { const t = tauriApi(); return (t?.core?.invoke) ? t.core.invoke.bind(t.core) : null; }
+function tauriListen() { const t = tauriApi(); return (t?.event?.listen) ? t.event.listen.bind(t.event) : null; }
+function hasBackend() { return !!tauriInvoke(); }
+/* Ждём появление API (init-скрипт гарантированно отрабатывает до window.load). */
+function waitForTauri(timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    if (tauriInvoke()) return resolve(true);
+    if (document.readyState === "complete") return resolve(!!tauriInvoke());
+    const t0 = Date.now();
+    const iv = setInterval(() => {
+      if (tauriInvoke() || Date.now() - t0 > timeoutMs) { clearInterval(iv); resolve(!!tauriInvoke()); }
+    }, 100);
+    window.addEventListener("load", () => { clearInterval(iv); resolve(!!tauriInvoke()); }, { once: true });
+  });
+}
 
 const S = {
-  cfg: null, configs: [], checked: {}, results: {}, selGrade: "",
+  cfg: null, configs: [], checked: {}, results: {}, live: {}, livePing: {}, selGrade: "",
   domFiles: [], domSel: "", logs: [],
   pingHist: { DiscordMain: [], YouTubeWeb: [] },
   vpnCache: null, filters: null,
@@ -43,8 +61,13 @@ function toast(title, text, kind = "") {
 }
 
 async function api(cmd, args = {}) {
+  // invoke резолвится в момент вызова: window.__TAURI__ может появиться позже загрузки скрипта.
+  const inv = tauriInvoke();
+  if (!inv) {
+    throw new Error("Нет связи с ядром (запустите собранное приложение, а не браузер)");
+  }
   try {
-    return await invoke(cmd, args);
+    return await inv(cmd, args);
   } catch (e) {
     toast("Ошибка", String(e?.message ?? e), "bad");
     throw e;
@@ -66,8 +89,14 @@ function openModal(title, bodyHTML, buttons = []) {
   }
   $("modal-wrap").classList.remove("hidden");
 }
-function closeModal() { $("modal-wrap").classList.add("hidden"); }
-$("modal-wrap").addEventListener("click", (e) => { if (e.target.id === "modal-wrap") closeModal(); });
+function closeModal() {
+  $("modal-wrap")?.classList.add("hidden");
+  // сброс id карточки после спамтон-магазина (раньше было через перезапись функции —
+  // ломалось в strict mode и роняло весь скрипт, из-за чего не работали вкладки)
+  const m = document.querySelector("#spam-shop-card");
+  if (m) m.id = "modal-card";
+}
+$("modal-wrap")?.addEventListener("click", (e) => { if (e.target.id === "modal-wrap") closeModal(); });
 
 /* ---------- навигация ---------- */
 const TITLES = {
@@ -77,19 +106,36 @@ const TITLES = {
   journal: ["Журнал действий", "все переключения и изменения настроек"],
   settings: ["Настройки", "папка, мониторинг, оформление, приложение"],
 };
-document.querySelectorAll("#nav button").forEach((b) => {
-  b.addEventListener("click", () => {
-    document.querySelectorAll("#nav button").forEach((x) => x.classList.remove("active"));
-    b.classList.add("active");
-    document.querySelectorAll(".page").forEach((p) => p.classList.add("hidden"));
-    $("page-" + b.dataset.page).classList.remove("hidden");
-    $("page-title").textContent = TITLES[b.dataset.page][0];
-    $("page-sub").textContent = TITLES[b.dataset.page][1];
-    if (b.dataset.page === "logs") refreshLogs();
-    if (b.dataset.page === "journal") refreshJournal();
-    if (b.dataset.page === "domains") refreshDomains();
+function showPage(name) {
+  if (!name || !TITLES[name]) return false;
+  document.querySelectorAll("#nav button").forEach((x) =>
+    x.classList.toggle("active", x.dataset.page === name));
+  document.querySelectorAll(".page").forEach((p) => p.classList.add("hidden"));
+  const pg = $("page-" + name);
+  if (!pg) return false;
+  pg.classList.remove("hidden");
+  const t = $("page-title"), s = $("page-sub");
+  if (t) t.textContent = TITLES[name][0];
+  if (s) s.textContent = TITLES[name][1];
+  if (hasBackend()) {
+    if (name === "logs" && typeof refreshLogs === "function") refreshLogs().catch(() => {});
+    if (name === "journal" && typeof refreshJournal === "function") refreshJournal().catch(() => {});
+    if (name === "domains" && typeof refreshDomains === "function") refreshDomains().catch(() => {});
+  }
+  return true;
+}
+// доступно из консоли и из других обработчиков: window.zmShowPage('settings')
+window.zmShowPage = showPage;
+function bindNav() {
+  document.querySelectorAll("#nav button").forEach((b) => {
+    // защита от двойной привязки (bindNav вызывается и сразу, и по DOMContentLoaded)
+    if (b.dataset.navBound === "1") return;
+    b.dataset.navBound = "1";
+    b.addEventListener("click", () => showPage(b.dataset.page));
   });
-});
+}
+bindNav();
+document.addEventListener("DOMContentLoaded", bindNav);
 
 /* ---------- тема ---------- */
 function applyTheme(name) {
@@ -171,13 +217,11 @@ async function refreshActiveBar() {
     $("vpn-line").textContent = v.active ? `VPN: ВКЛ (${v.names.join(", ").slice(0, 60)}) — возможны ошибки!` : "VPN: выкл";
     $("vpn-line").style.color = v.active ? "var(--yellow)" : "";
   } catch (_) {}
-  // ресурсы
+  // ресурсы: только реальное потребление самой программы (и winws, если запущен)
   try {
     const r = await api("resource_state");
-    const parts = [];
-    if (r.cpu != null) parts.push(`CPU ${r.cpu.toFixed(0)}%`);
-    if (r.ram_mb != null) parts.push(`RAM ${r.ram_mb} МБ`);
-    if (r.gpu) parts.push(r.gpu);
+    const parts = [`Приложение: CPU ${r.app.cpu?.toFixed(0) ?? "—"}% • RAM ${r.app.ram_mb ?? "—"} МБ`];
+    if (r.winws) parts.push(`winws: CPU ${r.winws.cpu?.toFixed(0) ?? "—"}% • RAM ${r.winws.ram_mb ?? "—"} МБ`);
     $("res-line").textContent = parts.join(" • ");
   } catch (_) {}
 }
@@ -198,7 +242,7 @@ async function refreshConfigs() {
   S.configs = list;
   const box = $("cfg-list");
   box.innerHTML = "";
-  if (!list.length) { box.innerHTML = `<div class="muted">⚠ Конфиги не найдены</div>`; return; }
+  if (!list.length) { box.innerHTML = `<div class="muted">! Конфиги не найдены</div>`; return; }
   for (const c of list) {
     if (!(c.name in S.checked)) S.checked[c.name] = true;
     const fav = (S.cfg.fav_configs || []).includes(c.name);
@@ -207,7 +251,7 @@ async function refreshConfigs() {
     row.innerHTML = `<button class="star ${fav ? "on" : ""}" title="В избранное">★</button>
       <input type="checkbox" ${S.checked[c.name] ? "checked" : ""}>
       <span class="nm" title="${esc(c.name)}" style="${fav ? "font-weight:bold" : ""}">${esc(c.display)}</span>
-      <button class="go" title="Применить сразу">▶</button>`;
+      <button class="go" title="Применить сразу"><svg class="btn-icon" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21"/></svg></button>`;
     row.querySelector(".star").addEventListener("click", async (e) => {
       e.stopPropagation();
       const favs = S.cfg.fav_configs || [];
@@ -237,7 +281,9 @@ function setChecking(on) {
 async function startCheck(bats) {
   if (!bats.length) { toast("Проверка", "Выберите хотя бы один конфиг", "bad"); return; }
   setChecking(true);
-  $("grade-table tbody").innerHTML = "";
+  S.live = {};
+  S.livePing = {};
+  document.querySelector("#grade-table tbody").innerHTML = "";
   $("check-log").textContent = "";
   $("prog-fill").style.width = "0%";
   $("prog-label").textContent = "Проверка идёт…";
@@ -264,22 +310,67 @@ $("btn-cancel").addEventListener("click", () => api("cancel_check"));
 function gradeColor(g) {
   return { "Отличный": "var(--green)", "Хороший": "var(--green)", "Средний": "var(--yellow)", "Плохой": "var(--accent2)", "Не работает": "var(--red)" }[g] || "var(--muted)";
 }
-function renderResults(results) {
-  S.results = results;
-  const tb = $("grade-table tbody");
+function paintGradeTable() {
+  const tb = document.querySelector("#grade-table tbody");
+  if (!tb) return;
   tb.innerHTML = "";
-  const rows = Object.entries(results).sort((a, b) => b[1].score - a[1].score);
-  for (const [name, r] of rows) {
+  const rows = Object.entries(S.results || {}).map(([name, r]) => ({
+    name, grade: r.grade, dm: r.discord_ms, ym: r.youtube_ms,
+    score: r.score, final: r.final !== false, live: false,
+  }));
+  for (const [name, score] of Object.entries(S.live || {})) {
+    if (name in (S.results || {})) continue;
+    const lp = (S.livePing || {})[name] || {};
+    rows.push({ name, grade: "…", dm: lp.ds ?? null, ym: lp.yt ?? null, score, final: false, live: true });
+  }
+  rows.sort((a, b) => b.score - a.score);
+  const goBtn = `<button class="go" title="Применить"><svg class="btn-icon" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21"/></svg></button>`;
+  for (const r of rows) {
     const tr = document.createElement("tr");
-    if (name === S.selGrade) tr.classList.add("sel");
-    tr.innerHTML = `<td>${esc(shortBat(name))}</td>
-      <td style="color:${gradeColor(r.grade)};font-weight:bold">${esc(r.grade)}${r.final ? "" : "≈"}</td>
-      <td>${fmtPing(r.discord_ms)}</td><td>${fmtPing(r.youtube_ms)}</td>
-      <td>${r.score}</td><td><button class="go" title="Применить">▶</button></td>`;
-    tr.addEventListener("click", () => { S.selGrade = name; tb.querySelectorAll("tr").forEach((x) => x.classList.remove("sel")); tr.classList.add("sel"); });
-    tr.querySelector(".go").addEventListener("click", (e) => { e.stopPropagation(); applyBat(name); });
+    if (r.name === S.selGrade) tr.classList.add("sel");
+    const gradeCell = r.live
+      ? `<td class="muted">…</td>`
+      : `<td style="color:${gradeColor(r.grade)};font-weight:bold">${esc(r.grade)}${r.final ? "" : "≈"}</td>`;
+    tr.innerHTML = `<td>${esc(shortBat(r.name))}</td>${gradeCell}`
+      + (r.live ? liveCell(r.dm) + liveCell(r.ym) : `<td>${fmtPing(r.dm)}</td><td>${fmtPing(r.ym)}</td>`)
+      + `<td>${r.score}</td><td>${r.live ? "" : goBtn}</td>`;
+    tr.addEventListener("click", () => { S.selGrade = r.name; tb.querySelectorAll("tr").forEach((x) => x.classList.remove("sel")); tr.classList.add("sel"); });
+    if (!r.live) tr.querySelector(".go").addEventListener("click", (e) => { e.stopPropagation(); applyBat(r.name); });
     tb.appendChild(tr);
   }
+}
+function renderResults(results) {
+  S.results = results;
+  S.live = {};
+  paintGradeTable();
+}
+function upsertLive(name, score) {
+  S.live = S.live || {};
+  if (name in (S.results || {})) return;
+  S.live[name] = score;
+  try { paintGradeTable(); } catch (_) {}
+}
+function pingGrade(pm) {
+  if (pm == null) return "—";
+  if (pm <= 100) return "Отличный";
+  if (pm <= 300) return "Хороший";
+  if (pm <= 1000) return "Средний";
+  return "Плохой";
+}
+function liveCell(v) {
+  if (v == null) return `<td>—</td>`;
+  return `<td style="color:${pingColor(v)}" title="${pingGrade(v)}">${v}ms (${pingGrade(v)})</td>`;
+}
+function livePing(bat, name, ms) {
+  if (!bat) return;
+  S.livePing = S.livePing || {};
+  const nm = name || "";
+  const side = /^Discord/i.test(nm) ? "ds" : /^YouTube/i.test(nm) ? "yt" : null;
+  if (!side) return;
+  const cur = S.livePing[bat] || {};
+  if (ms != null && (cur[side] == null || ms < cur[side])) cur[side] = ms;
+  S.livePing[bat] = cur;
+  try { paintGradeTable(); } catch (_) {}
 }
 
 /* ---------- применение ---------- */
@@ -338,9 +429,9 @@ $("btn-save-quick").addEventListener("click", async () => {
 async function refreshFilters() {
   try {
     S.filters = await api("filter_state");
-    $("btn-game-filter").textContent = `🎮 Game Filter: ${S.filters.game_mode}`;
+    $("btn-game-filter").textContent = `Game Filter: ${S.filters.game_mode}`;
     const ipTxt = { loaded: "Загружен", none: "Минимум", any: "Все" }[S.filters.ipset] || S.filters.ipset;
-    $("btn-ipset-filter").textContent = `🔢 IPSet Filter: ${ipTxt}`;
+    $("btn-ipset-filter").textContent = `IPSet Filter: ${ipTxt}`;
   } catch (_) {}
 }
 $("btn-game-filter").addEventListener("click", async () => {
@@ -360,8 +451,8 @@ $("btn-diag").addEventListener("click", async () => {
   openModal("Диагностика", rows.map((r) =>
     `<div class="diag-row"><b style="color:${icons[r.kind] || "var(--text)"}">${esc(r.icon)}</b><span style="width:200px">${esc(r.name)}</span><span style="color:${icons[r.kind] || "var(--text)"}">${esc(r.status)}</span></div>`
   ).join("") || "Нет данных", [
-    ["🧹 DNS-кэш", "ghost", async () => { const r = await api("flush_dns"); toast("DNS-кэш", r.msg, r.ok ? "good" : "bad"); }],
-    ["🌐 Сброс сети", "ghost", async () => {
+    ["DNS-кэш", "ghost", async () => { const r = await api("flush_dns"); toast("DNS-кэш", r.msg, r.ok ? "good" : "bad"); }],
+    ["Сброс сети", "ghost", async () => {
       if (!confirm("Сбросить сетевой стек (winsock)? Нужна перезагрузка ПК. Продолжить?")) return;
       const r = await api("net_reset"); toast("Сброс сети", r.msg, r.ok ? "good" : "bad");
     }],
@@ -405,6 +496,25 @@ async function setTheme(name, save = true) {
   applyTheme(name);
   paintBricks(name === "spamton");
   paintTermMascot(name === "terminal");
+  syncThemeOverlays();
+}
+/* Оверлеи тем: CRT для терминала, OSD+трекинг для VHS, прячем фон у маскота. */
+function syncThemeOverlays() {
+  const t = document.documentElement.dataset.theme;
+  const crt = $("crt");
+  if (crt) crt.classList.toggle("hidden", t !== "terminal");
+  const osd = $("vhs-osd");
+  if (osd) osd.classList.toggle("hidden", t !== "vhs");
+  const trk = $("vhs-track");
+  if (trk) trk.classList.toggle("hidden", t !== "vhs");
+  const grn = $("vhs-grain");
+  if (grn) grn.classList.toggle("hidden", t !== "vhs");
+  if (t === "terminal") {
+    const g = $("gal-fun");
+    if (g) g.classList.add("hidden");
+  } else {
+    try { funApply(); } catch (_) {}
+  }
 }
 
 $("btn-secret-ok").addEventListener("click", async () => {
@@ -475,15 +585,12 @@ async function funApply() {
     FUN.files = await api("funny_list");
     $("tv-frame").src = await imgUrl("funny_image", { name: "tv_ts_screen.png" });
     $("tv-screen").src = await imgUrl("funny_image", { name: "idle_gif.gif" });
-    const cyc = FUN.files.filter((f) => f === "bg_g.gif" || f === "idle_gif.gif");
-    if (cyc.length) {
-      const show = async () => {
-        FUN.bgIdx = (FUN.bgIdx + 1) % cyc.length;
-        try { $("gal-fun").src = await imgUrl("funny_image", { name: cyc[FUN.bgIdx] }); } catch (_) {}
-        $("gal-fun").classList.remove("hidden");
-      };
-      show();
-      FUN.bgTimer = setInterval(show, 8000);
+    // слева всегда только bg_g
+    const bg = FUN.files.includes("bg_g.gif") ? "bg_g.gif"
+      : (FUN.files.includes("idle_gif.gif") ? "idle_gif.gif" : null);
+    if (bg) {
+      $("gal-fun").src = await imgUrl("funny_image", { name: bg });
+      $("gal-fun").classList.remove("hidden");
     }
   } catch (_) {}
 }
@@ -496,6 +603,36 @@ function funGradeScreen(results) {
   }
   const f = TV_BY_GRADE[best] || "idle_gif.gif";
   imgUrl("funny_image", { name: f }).then((u) => { $("tv-screen").src = u; }).catch(() => {});
+}
+/* ----- фоновая музыка секретных тем (loop) ----- */
+const MUSIC = { el: null, part: 0, cache: {} };
+async function musicPlay(part) {
+  // part: 1 = regular.mp3, 2 = special.mp3
+  const file = part === 2 ? "special.mp3" : "regular.mp3";
+  try {
+    if (!MUSIC.cache[part]) MUSIC.cache[part] = await api("theme_music", { name: file });
+    const url = MUSIC.cache[part];
+    if (!MUSIC.el) {
+      MUSIC.el = new Audio();
+      MUSIC.el.loop = true;
+      MUSIC.el.volume = 0.5;
+    }
+    if (MUSIC.el.dataset.part === String(part) && !MUSIC.el.paused) return;
+    MUSIC.el.src = url;
+    MUSIC.el.dataset.part = String(part);
+    await MUSIC.el.play().catch(() => {});
+    MUSIC.part = part;
+  } catch (_) {}
+}
+function musicStop() {
+  try { if (MUSIC.el) MUSIC.el.pause(); } catch (_) {}
+  MUSIC.part = 0;
+}
+/* Этап 1/2: выбор зацикленного трека. Играет только пока включён особый режим. */
+function setStage(n) {
+  SPAM.stage = n === 2 ? 2 : 1;
+  if (!SPAM.on) { musicStop(); return; }
+  musicPlay(SPAM.stage);
 }
 $("set-funny").addEventListener("change", async (e) => {
   S.cfg.silly_mode = e.target.checked;
@@ -555,7 +692,7 @@ function paintBricks(on) {
 
 /* ----- спамтон-движок ----- */
 const SPAM = {
-  on: false, sayT: null, shopT: null, nos: 0,
+  on: false, sayT: null, shopT: null, nos: 0, stage: 1,
   quotes: ["HELLO, MY FRIEND! IT'S ME, SPAMTON G. SPAMTON!", "YOU WANT IT! YOU WANT [[HyperlinkBlocked]], DON'T YOU?", "I'M A [[BIG SHOT]] NOW!", "HAVE YOU EVER HEARD OF [Free Kromer]?", "DON'T FORGET! [[KROMER]] MAKES THE WORLD GO ROUND!", "WOWIE! A CUSTOMER!! COME ON IN!", "NO ONE CAN STOP THE [[BIG SHOT]] EXPRESS!", "THAT'S MY [Special Price]! JUST FOR YOU!"],
   goods: [["S. POTION", "5 KROMER"], ["[[Leftover Pippis]]", "15 KROMER"], ["KEYGEN 1997", "30 KROMER"], ["TRASH CAN (MINT)", "50 KROMER"], ["LANCER COOKIES", "2 KROMER"], ["[HyperlinkBlocked]", "??? KROMER"], ["BIG SHOT BOWTIE", "100 KROMER"], ["DEAL-A-DAY LENS", "25 KROMER"]],
   ads: [["PIPPIS!!", "50% OFF", "EAT NOW"], ["[[KROMER]]", "FREE*", "*NOT FREE"], ["BIG SHOT", "BE ONE", "CLICK!"], ["WIRE SALE", "-99%", "TODAY"], ["KEYGEN", "PRO 1997", "DOWNLOAD"], ["DEALS!!", "DEALS!!", "DEALS!!"]],
@@ -572,12 +709,15 @@ function spamClearTimers() {
 }
 function spamExtrasOn() {
   SPAM.on = true;
+  setStage(1);
   spamSideStatic();
   spamSaySchedule(true);
-  spamShopSchedule();
+  spamShopSchedule(true);
 }
 function spamDisable(restore) {
   SPAM.on = false;
+  SPAM.stage = 1;
+  musicStop();
   SPAM.nos = 0;
   spamClearTimers();
   $("gal-spam").classList.add("hidden");
@@ -612,11 +752,12 @@ async function spamIntroEnd() {
   ov.classList.add("hidden");
   ov.onclick = null;
   SPAM.on = true;
+  setStage(1);
   await setTheme("spamton");
   paintBricks(true);
   spamSideStatic();
   spamSaySchedule(true);
-  spamShopSchedule();
+  spamShopSchedule(true);
   S.cfg = await api("get_config");
   await secretSync();
   vsdGallery();
@@ -624,7 +765,7 @@ async function spamIntroEnd() {
 function spamSaySchedule(first) {
   clearTimeout(SPAM.sayT);
   if (!SPAM.on) return;
-  SPAM.sayT = setTimeout(spamSay, (first ? 20 + Math.random() * 20 : 45 + Math.random() * 75) * 1000);
+  SPAM.sayT = setTimeout(spamSay, (first ? 8 + Math.random() * 10 : 20 + Math.random() * 30) * 1000);
 }
 function spamSay() {
   if (!SPAM.on) return;
@@ -634,10 +775,31 @@ function spamSay() {
   setTimeout(() => s.classList.add("hidden"), 6000);
   spamSaySchedule(false);
 }
-function spamShopSchedule() {
+/* Gif замирает на 3 секунды: подменяем текущий кадр статикой через canvas. */
+function spamFreeze() {
+  const img = $("gal-spam");
+  if (!img || img.classList.contains("hidden") || !img.src || img.dataset.frozen) return;
+  try {
+    const c = document.createElement("canvas");
+    c.width = img.naturalWidth || 220;
+    c.height = img.naturalHeight || 200;
+    c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+    img.dataset.real = img.src;
+    img.dataset.frozen = "1";
+    img.src = c.toDataURL("image/png");
+    setTimeout(() => {
+      if (img.dataset.frozen) {
+        delete img.dataset.frozen;
+        if (img.dataset.real) img.src = img.dataset.real;
+        delete img.dataset.real;
+      }
+    }, 3000);
+  } catch (_) {}
+}
+function spamShopSchedule(first = false) {
   clearTimeout(SPAM.shopT);
   if (!SPAM.on) return;
-  SPAM.shopT = setTimeout(spamShopOffer, (180 + Math.random() * 240) * 1000);
+  SPAM.shopT = setTimeout(spamShopOffer, (first ? 12 + Math.random() * 8 : 30 + Math.random() * 30) * 1000);
 }
 async function spamShopOffer() {
   if (!SPAM.on || !$("blackout").classList.contains("hidden")) { spamShopSchedule(); return; }
@@ -649,6 +811,7 @@ async function spamShopOffer() {
     ["[[YES]]", "accent", () => { closeModal(); SPAM.nos = 0; spamAds(); spamShopSchedule(); }],
     ["no...", "ghost", () => {
       closeModal();
+      spamFreeze();
       SPAM.nos++;
       if (SPAM.nos >= 3) { SPAM.nos = 0; spamBlackout(); spamShopSchedule(); return; }
       toast("SPAMTON", "WHY NOT?? DEAL'S GONE!", "");
@@ -657,12 +820,6 @@ async function spamShopOffer() {
   ]);
   $("modal-card").id = "spam-shop-card";
 }
-const _origCloseModal = closeModal;
-closeModal = function () {
-  _origCloseModal();
-  const m = $("modal-card");
-  if (m) m.id = "modal-card";
-};
 function spamAds() {
   if (!SPAM.on) return;
   const bgs = ["#FFE600", "#FF8AC2", "#7FD4F7", "#FFFFFF", "#B6F09C"];
@@ -693,31 +850,81 @@ function spamAdClose(w) {
 function spamBlackout() {
   const b = $("blackout");
   b.classList.remove("hidden");
-  b.innerHTML = `<div class="lamp-cord" id="bl-cord"></div><div class="lamp-shade" id="bl-shade"></div><div class="lamp-bulb" id="bl-bulb"></div><div class="beam" id="bl-beam"></div><button class="yesbtn" id="bl-yes">[[YES]]</button>`;
-  const layout = (t) => {
-    const w = innerWidth, h = innerHeight, cx = w / 2;
-    const shift = Math.round(110 * Math.sin(t * 0.22));
-    const set = (id, l, top, wd, ht) => { const e = $(id); e.style.left = l + "px"; e.style.top = top + "px"; if (wd) e.style.width = wd + "px"; if (ht) e.style.height = ht + "px"; };
-    set("bl-cord", cx - 2, 0, 4, 34);
-    set("bl-shade", cx - 34, 30, 68, 32);
-    set("bl-bulb", cx - 9, 56, 18, 18);
-    const beam = $("bl-beam");
-    beam.style.left = "0px"; beam.style.top = "70px"; beam.style.width = w + "px"; beam.style.height = (h - 70) + "px";
-    beam.style.clipPath = `polygon(${cx - 26}px 0, ${cx + 26}px 0, ${cx + 190 + shift}px 100%, ${cx - 190 + shift}px 100%)`;
+  setStage(2);
+  b.innerHTML = `<canvas id="bl-canvas"></canvas>
+    <div id="bl-lamp" title="тащи меня"><div class="px-cord"></div><div class="px-shade"></div><div class="px-bulb"></div></div>
+    <button class="yesbtn" id="bl-yes">[[YES]]</button>`;
+  const cv = $("bl-canvas"), ctx = cv.getContext("2d");
+  // маятник: pivot таскается мышью, лампа качается вокруг него под ~5 градусов
+  const L = { px: Math.round(innerWidth / 2), py: 0, drag: false, gx: 0, gy: 0 };
+  const ARM = 95, SWAY = 5 * Math.PI / 180;
+  const fit = () => { cv.width = innerWidth; cv.height = innerHeight; };
+  fit();
+  const draw = (t) => {
+    const w = cv.width, h = cv.height;
+    if (!w || !h) return;
+    const th = SWAY * Math.sin(t / 1100);
+    const bx = L.px + ARM * Math.sin(th);
+    const by = L.py + ARM * Math.cos(th);
+    ctx.globalCompositeOperation = "source-over";
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, w, h);
+    // треугольник света: вырезаем дыру в темноте, сквозь неё видно живые кнопки
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.save();
+    ctx.shadowColor = "#000";
+    ctx.shadowBlur = 46;
+    ctx.beginPath();
+    ctx.moveTo(bx - 13, by + 6);
+    ctx.lineTo(bx + 13, by + 6);
+    ctx.lineTo(Math.min(w, bx + 210), h);
+    ctx.lineTo(Math.max(0, bx - 210), h);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+    const lamp = $("bl-lamp");
+    if (lamp) {
+      lamp.style.left = (L.px - 34) + "px";
+      lamp.style.top = L.py + "px";
+      lamp.style.transform = `rotate(${(th * 180 / Math.PI).toFixed(2)}deg)`;
+    }
     const yes = $("bl-yes");
-    yes.style.left = (cx + shift - 60) + "px";
-    yes.style.top = Math.round(h * 0.62) + "px";
+    if (yes) { yes.style.left = (bx - 62) + "px"; yes.style.top = Math.round(h * 0.68) + "px"; }
   };
-  let t = 0;
-  layout(0);
-  const tick = setInterval(() => {
-    if ($("blackout").classList.contains("hidden")) { clearInterval(tick); return; }
-    layout(++t);
-  }, 120);
-  b._tick = tick;
+  let raf = 0;
+  const frame = () => {
+    if ($("blackout").classList.contains("hidden")) return;
+    draw(performance.now());
+    raf = requestAnimationFrame(frame);
+  };
+  frame();
+  const onResize = () => fit();
+  window.addEventListener("resize", onResize);
+  const lamp = $("bl-lamp");
+  const down = (e) => {
+    L.drag = true;
+    L.gx = e.clientX - L.px;
+    L.gy = e.clientY - L.py;
+    try { lamp.setPointerCapture(e.pointerId); } catch (_) {}
+    e.preventDefault();
+  };
+  const move = (e) => {
+    if (!L.drag) return;
+    L.px = Math.max(40, Math.min(innerWidth - 40, e.clientX - L.gx));
+    L.py = Math.max(0, Math.min(innerHeight * 0.45, e.clientY - L.gy));
+  };
+  const up = () => { L.drag = false; };
+  lamp.addEventListener("pointerdown", down);
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up);
   const end = (purchased) => {
-    clearInterval(tick);
+    cancelAnimationFrame(raf);
+    window.removeEventListener("resize", onResize);
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", up);
     b.classList.add("hidden"); b.innerHTML = "";
+    setStage(1);
     if (purchased) {
       toast("SPAMTON", "PLEASURE DOING BUSINESS!!", "good");
       spamAds();
@@ -810,7 +1017,7 @@ async function refreshLogs() {
     box.appendChild(row);
     return row;
   };
-  mkRow("🔄 Переключения", async () => {
+  mkRow("Переключения", async () => {
     const lines = await api("read_switches", { limit: 500 }).catch(() => []);
     $("log-view").textContent = lines.join("\n") || "Пока пусто — переключений не было.";
   });
@@ -941,11 +1148,11 @@ setInterval(async () => {
   const jumped = now - lastTick;
   lastTick = now;
   if (jumped < 90000) return;
-  toast("💤 Пробуждение", "ПК проснулся из сна — проверяю связь…", "");
+  toast("Пробуждение", "ПК проснулся из сна — проверяю связь…", "");
   try {
     const pts = await api("ping_status");
     const bad = pts.filter((p) => p.ping_ms == null).length;
-    toast("💤 После сна", bad ? "Связь плохая — мониторинг подберёт конфиг." : "Связь в порядке.", bad ? "bad" : "good");
+    toast("После сна", bad ? "Связь плохая — мониторинг подберёт конфиг." : "Связь в порядке.", bad ? "bad" : "good");
   } catch (_) {}
 }, 15000);
 
@@ -981,7 +1188,7 @@ $("btn-updates").addEventListener("click", async () => {
     const u = await api("check_updates");
     if (u.zapret_tag) {
       const b = document.createElement("button");
-      b.className = "btn ghost"; b.textContent = `⬇ zapret ${u.zapret_tag}`;
+      b.className = "btn ghost"; b.textContent = `↓ zapret ${u.zapret_tag}`;
       b.addEventListener("click", () => api("open_url", { url: u.zapret_url }));
       $("update-info").appendChild(b);
     }
@@ -990,7 +1197,7 @@ $("btn-updates").addEventListener("click", async () => {
     const upd = await api("app_update_check");
     if (upd) {
       const b = document.createElement("button");
-      b.className = "btn accent"; b.textContent = `⬇ Менеджер v${upd.version} — установить`;
+      b.className = "btn accent"; b.textContent = `↓ Менеджер v${upd.version} — установить`;
       b.title = upd.body.slice(0, 300);
       b.addEventListener("click", async () => {
         if (!confirm(`Установить v${upd.version}? Приложение перезапустится.`)) return;
@@ -1048,7 +1255,7 @@ $("btn-theme-save").addEventListener("click", async () => {
 });
 $("btn-theme-export").addEventListener("click", () => {
   const json = JSON.stringify({ name: "custom", palette: readThemeEditor() }, null, 2);
-  openModal("Экспорт темы", `<textarea style="width:100%;min-height:200px;font-family:Consolas,monospace">${esc(json)}</textarea><div class="btn-row" style="margin-top:8px"><button class="btn accent" id="theme-copy">📋 Копировать</button></div>`, [["Закрыть", "ghost", () => closeModal()]]);
+  openModal("Экспорт темы", `<textarea style="width:100%;min-height:200px;font-family:Consolas,monospace">${esc(json)}</textarea><div class="btn-row" style="margin-top:8px"><button class="btn accent" id="theme-copy"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Копировать</button></div>`, [["Закрыть", "ghost", () => closeModal()]]);
   $("theme-copy").addEventListener("click", () => {
     navigator.clipboard?.writeText(json).then(() => toast("Тема", "Скопировано", "good")).catch(() => {});
   });
@@ -1107,16 +1314,16 @@ function stratTitle(b) {
 function renderStrategy() {
   const items = STRAT.blocks.map((b, i) =>
     `<div class="dom-row ${i === STRAT.idx ? "sel" : ""}" data-i="${i}">${i + 1}. ${esc(stratTitle(b))}</div>`).join("");
-  openModal(`🧬 Стратегии — ${esc(STRAT.bat)}`,
+  openModal(`Стратегии — ${esc(STRAT.bat)}`,
     `<div style="display:flex;gap:10px"><div style="width:260px;max-height:300px;overflow:auto">${items}</div>
      <div style="flex:1"><textarea id="strat-text" spellcheck="false" style="width:100%;min-height:200px;font-family:Consolas,monospace"></textarea>
      <div class="btn-row" style="margin-top:8px"><select id="strat-preset">${Object.keys(STRAT_PRESETS).map((k) => `<option>${k}</option>`).join("")}</select>
      <button class="btn ghost" id="strat-apply-preset">Шаблон</button>
-     <button class="btn ghost" id="strat-add">＋ Блок</button>
+     <button class="btn ghost" id="strat-add"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Блок</button>
      <button class="btn ghost" id="strat-dup">⧉ Дублировать</button>
      <button class="btn ghost" id="strat-del">✕ Удалить</button></div></div></div>`, [
-    ["💾 Как новый", "accent", () => stratSave(true)],
-    ["💾 Перезаписать (.bak)", "ghost", () => { if (confirm("Перезаписать исходный bat? Старая копия — в .bak.")) stratSave(false); }],
+["Как новый", "accent", () => stratSave(true)],
+["Перезаписать (.bak)", "ghost", () => { if (confirm("Перезаписать исходный bat? Старая копия — в .bak.")) stratSave(false); }],
     ["Отмена", "ghost", () => closeModal()],
   ]);
   const sync = () => {
@@ -1173,18 +1380,42 @@ async function stratSave(asNew) {
 /* ---------- мастер первого запуска ---------- */
 async function maybeWizard() {
   if (localStorage.getItem("zm-wizard") === "1") return false;
+  if (!hasBackend()) { openWizard(); return true; }
   const cfgs = await api("list_configs").catch(() => []);
   const hasScores = S.cfg.best_scores && Object.keys(S.cfg.best_scores).length > 0;
   if (cfgs.length && hasScores) { localStorage.setItem("zm-wizard", "1"); return false; }
   openWizard();
   return true;
 }
+/* Картинка/видео мастера: сначала пробуем ядро (assets/wizard), иначе файлы рядом */
+async function wizImageSrc() {
+  if (hasBackend()) {
+    try { return await api("wizard_image"); } catch (_) {}
+  }
+  return "wizard.jpg";
+}
+async function wizVideoSrc() {
+  if (hasBackend()) {
+    try { return await api("wizard_video"); } catch (_) {}
+  }
+  return "install_wizards.mp4";
+}
 function openWizard() {
-  const W = { step: 0, shortcut: true };
+  const W = { step: 0, shortcut: true, checkDone: false, videoDone: false, checkRunning: false };
   const wiz = $("wizard");
+  if (!wiz) return;
   wiz.classList.remove("hidden");
+  const finishAndClose = () => {
+    try {
+      const v = $("wiz-video");
+      if (v) { v.pause(); v.removeAttribute("src"); v.load?.(); }
+    } catch (_) {}
+    wiz.classList.add("hidden");
+    try { localStorage.setItem("zm-wizard", "1"); } catch (_) {}
+  };
   const show = () => {
-    const titles = ["Шаг 1/3 — папка zapret", "Шаг 2/3 — проверка конфигов", "Шаг 3/3 — применить лучший"];
+    const titles = ["Шаг 1/4 — добро пожаловать", "Шаг 2/4 — папка zapret", "Шаг 3/4 — установка и проверка", "Шаг 4/4 — применить лучший"];
+    $("wizard-title").textContent = "Мастер установки";
     $("wizard-sub").textContent = titles[W.step];
     const body = $("wizard-body"), nav = $("wizard-nav");
     body.innerHTML = ""; nav.innerHTML = "";
@@ -1193,14 +1424,24 @@ function openWizard() {
     back.addEventListener("click", () => { W.step--; show(); });
     const close = document.createElement("button");
     close.className = "btn ghost"; close.textContent = "Закрыть";
-    close.addEventListener("click", () => { wiz.classList.add("hidden"); localStorage.setItem("zm-wizard", "1"); startTour(); });
+    close.addEventListener("click", () => { finishAndClose(); startTour(); });
     const next = document.createElement("button");
-    next.className = "btn accent"; next.textContent = W.step < 2 ? "Далее →" : "Готово";
+    next.className = "btn accent"; next.textContent = W.step < 3 ? "Далее →" : "Готово";
     nav.append(back, next, close);
     if (W.step === 0) {
+      body.innerHTML = `<div class="wiz-welcome">
+        <div class="wiz-text"><b>Сейчас мы всё сделаем за вас.</b><br>
+        Установим все зависимости и всё необходимое, найдём папку zapret,
+        проверим конфиги и включим лучший. Ничего сложного — просто жмите «Далее».</div>
+        <img id="wiz-img" class="wiz-img" alt="Мастер установки">
+        <div class="wiz-steps muted small">1) Папка → 2) Проверка под видео → 3) Готово</div>
+      </div>`;
+      wizImageSrc().then((src) => { const im = $("wiz-img"); if (im) im.src = src; });
+      next.addEventListener("click", () => { W.step = 1; show(); });
+    } else if (W.step === 1) {
       body.innerHTML = `<div class="muted" style="margin-bottom:8px">Где лежит zapret (general.bat, service.bat, bin/, lists/)?</div>
-        <div class="btn-row"><input id="wiz-root" style="flex:1" value="${esc(S.cfg.zapret_root || "")}">
-        <button class="btn ghost" id="wiz-find">🔍 Найти</button></div>
+        <div class="btn-row"><input id="wiz-root" style="flex:1" value="${esc(S.cfg?.zapret_root || "")}">
+        <button class="btn ghost" id="wiz-find"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>Найти</button></div>
         <label class="row" style="margin-top:8px"><span>Ярлык на рабочем столе</span><input type="checkbox" id="wiz-shortcut" class="switch" checked></label>
         <div class="muted small">Нет папки? После мастера: Настройки → Папка (там же переустановка скачает свежий релиз).</div>`;
       $("wiz-find").addEventListener("click", async () => {
@@ -1209,6 +1450,7 @@ function openWizard() {
         else toast("Папка", "Не нашёл сам — укажите вручную", "bad");
       });
       next.addEventListener("click", async () => {
+        if (!hasBackend()) { W.step = 2; show(); return; }
         const v = $("wiz-root").value.trim();
         if (!v) { toast("Мастер", "Укажите папку", "bad"); return; }
         W.shortcut = $("wiz-shortcut").checked;
@@ -1216,39 +1458,84 @@ function openWizard() {
         await api("save_config", { cfg: S.cfg });
         const cfgs = await api("list_configs").catch(() => []);
         if (!cfgs.length) { toast("Мастер", "В папке нет .bat — проверьте путь", "bad"); return; }
-        W.step = 1; show();
+        W.step = 2; show();
         refreshConfigs();
       });
-    } else if (W.step === 1) {
-      body.innerHTML = `<div id="wiz-status">Нажмите «Запустить проверку» — это несколько минут.</div>
-        <div class="btn-row" style="margin-top:10px"><button class="btn accent" id="wiz-run">▶ Запустить проверку</button></div>`;
-      $("wiz-run").addEventListener("click", async () => {
-        $("wiz-status").textContent = "Проверка идёт… можно подождать.";
-        $("wiz-run").disabled = true;
-        await startCheck(S.configs.map((c) => c.name));
-        const n = S.cfg.best_scores ? Object.keys(S.cfg.best_scores).length : 0;
-        $("wiz-status").textContent = `Готово! Оценок: ${n}. Жмите «Далее →».`;
+    } else if (W.step === 2) {
+      body.innerHTML = `<div id="wiz-status">Нажмите «Запустить установку» — пока всё ставится, смотрите видео. Кнопка «Далее» откроется, когда закончатся <b>и установка, и видео</b>.</div>
+        <video id="wiz-video" class="wiz-video" controls playsinline preload="auto"></video>
+        <div class="btn-row" style="margin-top:10px"><button class="btn accent" id="wiz-run"><svg class="btn-icon" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21"/></svg>Запустить установку</button></div>`;
+      next.disabled = true;
+      const status = $("wiz-status"), video = $("wiz-video"), runBtn = $("wiz-run");
+      const syncNext = () => {
+        if (W.checkDone && W.videoDone) {
+          next.disabled = false;
+          status.innerHTML = `Готово! Видео досмотрено, оценок: ${S.cfg?.best_scores ? Object.keys(S.cfg.best_scores).length : 0}. Жмите «Далее →».`;
+        } else if (W.checkDone && !W.videoDone) {
+          status.textContent = "Установка готова! Досмотрите видео до конца — потом жмите «Далее».";
+        } else if (!W.checkDone && W.checkRunning) {
+          status.textContent = "Установка идёт… смотрите видео, кнопка «Далее» пока закрыта.";
+        }
+      };
+      wizVideoSrc().then((src) => { if ($("wiz-video")) $("wiz-video").src = src; });
+      video.addEventListener("ended", () => {
+        if (W.checkDone) { W.videoDone = true; syncNext(); }
+        else {
+          // установка ещё идёт, а видео кончилось — крутим заново,
+          // чтобы пользователь смотрел до конца установки
+          try { video.currentTime = 0; video.play().catch(() => {}); } catch (_) {}
+        }
       });
-      next.addEventListener("click", () => { W.step = 2; show(); });
+      video.addEventListener("error", () => {
+        // нет видео — не блокируем мастера
+        W.videoDone = true; syncNext();
+      });
+      runBtn.addEventListener("click", async () => {
+        if (!hasBackend()) { toast("Мастер", "Нет ядра — демо-режим", "bad"); return; }
+        runBtn.disabled = true;
+        W.checkRunning = true; W.checkDone = false; W.videoDone = false;
+        syncNext();
+        try { video.currentTime = 0; await video.play().catch(() => {}); } catch (_) {}
+        status.textContent = "Установка идёт… смотрите видео.";
+        try {
+          await startCheck(S.configs.map((c) => c.name));
+        } catch (_) {}
+        W.checkRunning = false; W.checkDone = true;
+        try { S.cfg = await api("get_config"); } catch (_) {}
+        if (video.ended || video.error || !video.src) {
+          // видео уже кончилось / его нет — сразу открываем дальше
+          W.videoDone = true;
+        } else {
+          // установка обогнала видео: убираем зацикливание и ждём конца ролика
+          try { video.loop = false; await video.play().catch(() => {}); } catch (_) {}
+        }
+        syncNext();
+      });
+      next.addEventListener("click", () => {
+        if (!W.checkDone) { toast("Мастер", "Сначала запустите установку", "bad"); return; }
+        if (!W.videoDone) { toast("Мастер", "Досмотрите видео до конца", "bad"); return; }
+        try { video.pause(); } catch (_) {}
+        W.step = 3; show();
+      });
     } else {
-      const scores = S.cfg.best_scores || {};
+      const scores = (S.cfg && S.cfg.best_scores) || {};
       const win = Object.keys(scores).sort((a, b) => scores[b] - scores[a])[0];
       body.innerHTML = win
-        ? `<div style="font-size:16px;font-weight:bold">🏆 Лучший: ${esc(shortBat(win))} (score=${scores[win]})</div>
+        ? `<div style="font-size:16px;font-weight:bold">★ Лучший: ${esc(shortBat(win))} (score=${scores[win]})</div>
            <div class="muted" style="margin-top:6px">Применение ставит службу Windows с автозагрузкой.</div>`
         : `<div>Оценок нет — проверьте позже вручную.</div>`;
-      next.textContent = win ? "✔ Применить и завершить" : "Завершить";
+      next.textContent = win ? "Применить и завершить" : "Завершить";
       next.addEventListener("click", async () => {
-        wiz.classList.add("hidden");
-        localStorage.setItem("zm-wizard", "1");
-        if (W.shortcut) api("make_shortcut").catch(() => {});
-        if (win) applyBat(win);
+        finishAndClose();
+        if (W.shortcut && hasBackend()) api("make_shortcut").catch(() => {});
+        if (win && hasBackend()) applyBat(win);
         startTour();
       });
     }
   };
   show();
 }
+window.zmOpenWizard = openWizard;
 
 /* ---------- тур подсказок ---------- */
 const TOUR = [
@@ -1312,32 +1599,57 @@ async function bootSecrets() {
   paintBricks(S.cfg.theme === "spamton");
   if (SECRET.pack?.title === "Spamton" && SECRET.pack.enabled && SECRET.pack.files.length) {
     SPAM.on = true;
+    setStage(1);
     spamSideStatic();
     spamSaySchedule(true);
-    spamShopSchedule();
+    spamShopSchedule(true);
   }
 }
 
 async function boot() {
+  // API может появиться позже топ-уровня скрипта (init-скрипт WebView2) — ждём.
+  const backend = await waitForTauri();
+  if (!backend) {
+    // Режим без ядра (открыли index.html в браузере): вкладки и мастер работают,
+    // сетевые вызовы покажут понятную ошибку вместо падения всего скрипта.
+    applyFont();
+    applyTheme("scarlet");
+    try { buildThemeEditor(); } catch (_) {}
+    toast("Демо-режим", "Нет связи с ядром Tauri — откройте собранное приложение. Вкладки работают.", "bad");
+    return;
+  }
   S.cfg = await api("get_config");
+  if (S.cfg.theme === "amethyst") S.cfg.theme = "neon";
+  if (S.cfg.vsd_prev_theme === "amethyst") S.cfg.vsd_prev_theme = "neon";
   applyFont();
   if (S.cfg.theme === "custom" && S.cfg.custom_theme && Object.keys(S.cfg.custom_theme).length) applyCustomTheme();
   else applyTheme(S.cfg.theme || "scarlet");
+  syncThemeOverlays();
   await loadSettings();
   $("set-game").checked = !!S.cfg.game_mode;
   $("set-game-procs").value = S.cfg.game_procs || "";
   buildThemeEditor();
   await refreshConfigs();
+  if (!S.configs.length && hasBackend()) {
+    toast("Папка zapret", "Не нашёл папку zapret рядом с приложением — укажите её в Настройках (поле «Корневая папка zapret»).", "bad");
+  }
   await refreshActiveBar();
   await refreshFilters();
   await bootSecrets();
   const wiz = await maybeWizard();
   if (!wiz) setTimeout(startTour, 2500);
   await api("monitor_start").catch(() => {});
+  const listen = tauriListen();
+  if (!listen) return;
   await listen("check-progress", (e) => {
     const p = e.payload;
     $("prog-fill").style.width = (100 * p.done / Math.max(1, p.total)) + "%";
     $("prog-label").textContent = `[${p.done}/${p.total}] ${p.name} — score ${p.score}`;
+    upsertLive(p.name, p.score);
+  });
+  await listen("probe-ping", (e) => {
+    const p = e.payload || {};
+    livePing(p.bat, p.name, p.ping_ms);
   });
   await listen("check-done", (e) => {
     renderResults(e.payload.results || {});
@@ -1363,7 +1675,19 @@ async function boot() {
     }
   });
   setInterval(refreshActiveBar, 15000);
+  setInterval(() => {
+    if (document.documentElement.dataset.theme !== "vhs") return;
+    const el = $("vhs-time");
+    if (el) el.textContent = new Date().toLocaleTimeString("ru-RU", { hour12: false });
+    const dt = $("vhs-date");
+    if (dt) dt.textContent = new Date().toLocaleDateString("ru-RU");
+  }, 1000);
 }
 document.addEventListener("DOMContentLoaded", () => boot().catch((e) => {
-  document.body.innerHTML = "<pre style='padding:40px'>Не удалось связаться с ядром: " + esc(e) + "</pre>";
+  // НЕ затираем body: иначе пропадают вкладки. Показываем тост + статус.
+  try {
+    toast("Ядро", "Не удалось связаться с ядром: " + String(e?.message ?? e), "bad");
+    const pl = $("prog-label");
+    if (pl) pl.textContent = "Нет связи с ядром — перезапустите приложение";
+  } catch (_) {}
 }));

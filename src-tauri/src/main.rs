@@ -614,6 +614,7 @@ async fn run_check(
         cancel: cancel_flag.clone(),
     };
     let had_service = zapret::service_status().zapret == "RUNNING";
+    let app_p = app.clone();
     let (results, mut aborted, logs) = engine::run_check(
         &ctx,
         bats,
@@ -625,6 +626,13 @@ async fn run_check(
             let _ = app_c.emit(
                 "check-progress",
                 engine::ProgressEvent { done, total, name: name.to_string(), score },
+            );
+        },
+        |bat, name, ping_ms| {
+            // мгновенный пинг цели — без ожидания счёта конфига
+            let _ = app_p.emit(
+                "probe-ping",
+                serde_json::json!({ "bat": bat, "name": name, "ping_ms": ping_ms }),
             );
         },
     )
@@ -689,13 +697,13 @@ fn save_check_history(cfg: &AppConfig, mode: &str, results: &HashMap<String, Bat
 // ================= мониторинг =================
 
 #[tauri::command]
-fn monitor_start(app: tauri::AppHandle, state: tauri::State<'_, MonitorState>) -> bool {
+async fn monitor_start(app: tauri::AppHandle, state: tauri::State<'_, MonitorState>) -> Result<bool, String> {
     monitor_stop_inner(&state);
     let app_c = app.clone();
     let h = tokio::spawn(async move { monitor_loop(app_c).await });
     *state.handle.lock().unwrap() = Some(h);
     log_action("Мониторинг запущен", "info");
-    true
+    Ok(true)
 }
 
 #[tauri::command]
@@ -811,7 +819,7 @@ async fn watchdog_try_return(app: &tauri::AppHandle) {
     log_action(&format!("Watchdog: пробую вернуться {cur} → {primary}"), "autoswitch");
     let _ = app.emit(
         "toast",
-        ToastEvent { title: "🔄 Watchdog".into(), text: format!("Пробую вернуться на {primary}…"), kind: "".into() },
+        ToastEvent { title: "Watchdog".into(), text: format!("Пробую вернуться на {primary}…"), kind: "".into() },
     );
     let cfg = config::load();
     let (ok, _) = zapret::install_service(&cfg.zapret_root, &primary);
@@ -843,7 +851,7 @@ async fn watchdog_try_return(app: &tauri::AppHandle) {
         }
         let _ = app.emit(
             "toast",
-            ToastEvent { title: "🔄 Watchdog".into(), text: "Основной всё ещё сбоит — вернулся на запасной.".into(), kind: "".into() },
+            ToastEvent { title: "Watchdog".into(), text: "Основной всё ещё сбоит — вернулся на запасной.".into(), kind: "".into() },
         );
     } else {
         if let Some(ms) = app.try_state::<MonitorState>() {
@@ -854,7 +862,7 @@ async fn watchdog_try_return(app: &tauri::AppHandle) {
         log_switch(&format!("watchdog возврат → {primary}"));
         let _ = app.emit(
             "toast",
-            ToastEvent { title: "✅ Watchdog".into(), text: format!("Основной {primary} снова в строю!"), kind: "good".into() },
+            ToastEvent { title: "Watchdog".into(), text: format!("Основной {primary} снова в строю!"), kind: "good".into() },
         );
     }
     let _ = app.emit("status-refresh", ());
@@ -884,7 +892,7 @@ async fn on_blocked(app: &tauri::AppHandle, cfg: &AppConfig, bad_ping: u64) {
         let _ = app.emit(
             "toast",
             ToastEvent {
-                title: "⚠ Проблемы с соединением".into(),
+                title: "Проблемы с соединением".into(),
                 text: "Нет данных для автопереключения. Запустите проверку.".into(),
                 kind: "bad".into(),
             },
@@ -907,7 +915,7 @@ async fn on_blocked(app: &tauri::AppHandle, cfg: &AppConfig, bad_ping: u64) {
         log_switch(&format!("авто: {cur} → {nxt}"));
         let _ = app.emit(
             "toast",
-            ToastEvent { title: "🔄 Автопереключение".into(), text: format!("{cur} сбоил.\nВключён {nxt}."), kind: "good".into() },
+            ToastEvent { title: "Автопереключение".into(), text: format!("{cur} сбоил.\nВключён {nxt}."), kind: "good".into() },
         );
     } else {
         log_action(&format!("Автопереключение не удалось ({nxt}): {m}"), "error");
@@ -1138,6 +1146,21 @@ fn funny_list() -> Vec<String> {
 #[tauri::command]
 fn funny_image(name: String) -> Result<String, String> {
     fun::funny_image(&name)
+}
+
+#[tauri::command]
+fn wizard_image() -> Result<String, String> {
+    fun::wizard_image()
+}
+
+#[tauri::command]
+fn wizard_video() -> Result<String, String> {
+    fun::wizard_video()
+}
+
+#[tauri::command]
+fn theme_music(name: String) -> Result<String, String> {
+    fun::theme_music(&name)
 }
 
 #[tauri::command]
@@ -1387,6 +1410,9 @@ fn main() {
             read_switches,
             funny_list,
             funny_image,
+            wizard_image,
+            wizard_video,
+            theme_music,
             terminal_mascot,
             silly_icon,
             secret_unlock,

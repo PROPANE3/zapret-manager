@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Zapret Manager v2.0.0</title>
+<title>Zapret Manager v2.0.1</title>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -11,24 +11,24 @@
   <div class="brick-strip hidden" id="brick-top"></div>
   <div id="layout">
   <aside id="sidebar">
-    <div class="brand"><span class="brand-fire">🔥</span><div><div class="brand-title">МЕНЮ</div><div class="brand-sub">DPI bypass control</div></div></div>
+    <div class="brand"><span class="brand-fire"><svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M12.963 2.286a.75.75 0 00-1.071-.136 9.742 9.742 0 00-3.539 6.177A7.547 7.547 0 016.648 6.61a.75.75 0 00-1.152-.082A9 9 0 1015.68 4.534a7.46 7.46 0 01-2.717-2.248zM15.75 14.25a3.75 3.75 0 11-7.313-1.172c.628.465 1.35.81 2.133 1a5.99 5.99 0 011.925-3.545 3.75 3.75 0 013.255 3.717z"/></svg></span><div><div class="brand-title">МЕНЮ</div><div class="brand-sub">DPI bypass control</div></div></div>
     <div class="sep"></div>
     <nav id="nav">
-      <button data-page="check" class="active">🔍&nbsp;&nbsp;Проверка</button>
-      <button data-page="domains">🌐&nbsp;&nbsp;Домены</button>
-      <button data-page="logs">📋&nbsp;&nbsp;Логи</button>
-      <button data-page="journal">📝&nbsp;&nbsp;Журнал</button>
-      <button data-page="settings">⚙️&nbsp;&nbsp;Настройки</button>
+      <button data-page="check" class="active"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>Проверка</button>
+      <button data-page="domains"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>Домены</button>
+      <button data-page="logs"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>Логи</button>
+      <button data-page="journal"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/><path d="M15 5l4 4"/></svg>Журнал</button>
+      <button data-page="settings"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Настройки</button>
     </nav>
     <div class="side-bottom">
       <img id="gal-fun" class="side-gal hidden" alt="">
       <img id="gal-vsd" class="side-gal hidden" alt="">
       <img id="gal-spam" class="side-gal hidden" alt="">
       <div id="gal-term-wrap" class="hidden scanlines"><img id="gal-term" alt=""></div>
-      <button id="btn-game-filter" class="btn ghost small-btn" title="Game Filter: цикл Выкл→TCP+UDP→TCP→UDP">🎮 Game Filter: —</button>
-      <button id="btn-ipset-filter" class="btn ghost small-btn" title="IPSet Filter: цикл Загружен→Минимум→Все">🔢 IPSet Filter: —</button>
+      <button id="btn-game-filter" class="btn ghost small-btn" title="Game Filter: цикл Выкл→TCP+UDP→TCP→UDP"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>Game Filter: —</button>
+      <button id="btn-ipset-filter" class="btn ghost small-btn" title="IPSet Filter: цикл Загружен→Минимум→Все"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>IPSet Filter: —</button>
       <div id="admin-line" class="muted small"></div>
-      <div class="muted small">v2.0.0 · Tauri</div>
+      <div class="muted small">v2.0.1 · Tauri</div>
     </div>
   </aside>
   <main id="main">
@@ -54,19 +54,19 @@
             </div>
           </div>
           <div class="hero-right">
-            <button id="btn-apply-sel" class="btn accent">✔ Применить выбранный</button>
-            <button id="btn-restart-svc" class="btn ghost" title="Перезапустить службу или активный конфиг">↻</button>
-            <button id="btn-remove-svc" class="btn ghost" title="Остановить обход и удалить службу">■</button>
-            <button id="btn-diag" class="btn ghost" title="Диагностика: BFE, прокси, WinDivert">🔧</button>
+            <button id="btn-apply-sel" class="btn accent"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>Применить выбранный</button>
+            <button id="btn-restart-svc" class="btn ghost" title="Перезапустить службу или активный конфиг"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button>
+            <button id="btn-remove-svc" class="btn ghost" title="Остановить обход и удалить службу"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/></svg></button>
+            <button id="btn-diag" class="btn ghost" title="Диагностика: BFE, прокси, WinDivert"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></button>
           </div>
         </div>
 
         <div class="card">
           <div class="btn-row">
-            <button id="btn-check-sel" class="btn accent big">▶&nbsp;&nbsp;ПРОВЕРИТЬ ВЫБРАННЫЕ</button>
+            <button id="btn-check-sel" class="btn accent big"><svg class="btn-icon" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21"/></svg>ПРОВЕРИТЬ ВЫБРАННЫЕ</button>
             <button id="btn-check-all" class="btn ghost big">Все</button>
             <button id="btn-check-active" class="btn ghost big" title="Проверить только активный конфиг">Активный</button>
-            <button id="btn-cancel" class="btn ghost big" disabled>⛔ Отмена</button>
+            <button id="btn-cancel" class="btn ghost big" disabled><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>Отмена</button>
           </div>
           <div class="progress"><div id="prog-fill"></div></div>
           <div id="prog-label" class="muted small">Готов к проверке</div>
@@ -81,8 +81,8 @@
             <label>Повторы <input id="in-repeat" type="number" min="1" max="3" value="1"></label>
             <label>Макс. пинг, мс <input id="in-thr" type="number" min="100" step="100" value="5000"></label>
             <label>Потоки <input id="in-workers" type="number" min="2" max="16" value="12"></label>
-            <button id="btn-save-quick" class="btn ghost">💾 Сохранить</button>
-            <button id="btn-strategy" class="btn ghost" title="Конструктор стратегий">🧬 Стратегии</button>
+            <button id="btn-save-quick" class="btn ghost"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>Сохранить</button>
+            <button id="btn-strategy" class="btn ghost" title="Конструктор стратегий"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>Стратегии</button>
           </div>
         </div>
 
@@ -105,11 +105,11 @@
           <div class="btn-row">
             <span class="muted small" id="dom-hint">Клик по строке — просмотр, тумблер — вкл/выкл</span>
             <span class="spacer"></span>
-            <button id="btn-dom-new" class="btn ghost">＋ Новый</button>
-            <button id="btn-dom-diff" class="btn ghost" title="Что изменилось в списках">📰 Diff</button>
-            <button id="btn-dom-snap" class="btn ghost" title="Сохранить снимок списков">📸 Снимок</button>
-            <button id="btn-dom-save" class="btn accent">💾 Сохранить</button>
-            <button id="btn-dom-refresh" class="btn ghost">🔄 Обновить</button>
+            <button id="btn-dom-new" class="btn ghost"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Новый</button>
+            <button id="btn-dom-diff" class="btn ghost" title="Что изменилось в списках"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7"/><path d="M12 22V12"/><path d="M12 7V2"/></svg>Diff</button>
+            <button id="btn-dom-snap" class="btn ghost" title="Сохранить снимок списков"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="12" r="4"/></svg>Снимок</button>
+            <button id="btn-dom-save" class="btn accent"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>Сохранить</button>
+            <button id="btn-dom-refresh" class="btn ghost"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>Обновить</button>
           </div>
         </div>
         <div class="cols">
@@ -120,7 +120,7 @@
 
       <section class="page hidden" id="page-logs">
         <div class="card">
-          <div class="btn-row"><span class="muted small">История проверок сохраняется в data/checks/*.json</span><span class="spacer"></span><button id="btn-logs-refresh" class="btn ghost">🔄 Обновить</button></div>
+          <div class="btn-row"><span class="muted small">История проверок сохраняется в data/checks/*.json</span><span class="spacer"></span><button id="btn-logs-refresh" class="btn ghost"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>Обновить</button></div>
         </div>
         <div class="cols">
           <div class="card grow1"><div class="sect">ФАЙЛЫ</div><div id="logs-list"></div></div>
@@ -130,7 +130,7 @@
 
       <section class="page hidden" id="page-journal">
         <div class="card">
-          <div class="btn-row"><span class="muted small">Все переключения и изменения настроек</span><span class="spacer"></span><button id="btn-journal-refresh" class="btn ghost">🔄 Обновить</button></div>
+          <div class="btn-row"><span class="muted small">Все переключения и изменения настроек</span><span class="spacer"></span><button id="btn-journal-refresh" class="btn ghost"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>Обновить</button></div>
           <pre id="journal-view" class="logbox tall"></pre>
         </div>
       </section>
@@ -138,10 +138,10 @@
       <section class="page hidden" id="page-settings">
         <div class="card narrow">
           <div class="sect">КОРНЕВАЯ ПАПКА ZAPRET</div>
-          <div class="btn-row"><input id="set-root" class="wide"><button id="btn-autodetect" class="btn ghost">🔍 Найти</button><button id="btn-save-root" class="btn accent">💾 Сохранить</button></div>
+          <div class="btn-row"><input id="set-root" class="wide"><button id="btn-autodetect" class="btn ghost"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>Найти</button><button id="btn-save-root" class="btn accent"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>Сохранить</button></div>
           <div class="muted small">Папка, где лежат general*.bat, service.bat и каталоги bin/ и lists/.</div>
           <div class="btn-row" style="margin-top:8px">
-            <button id="btn-reinstall" class="btn ghost">🔄 Переустановить Zapret</button>
+            <button id="btn-reinstall" class="btn ghost"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>Переустановить Zapret</button>
             <span id="reinstall-status" class="muted small"></span>
           </div>
           <div class="progress hidden" id="reinstall-prog"><div id="reinstall-fill"></div></div>
@@ -154,15 +154,16 @@
           <label class="row"><span>Дежурный напарник <span class="muted small">(охраняется основной)</span></span><input type="checkbox" id="set-buddy" class="switch"></label>
           <div class="btn-row"><button id="btn-buddy-assign" class="btn ghost">Основной = активный</button><span id="buddy-pair" class="muted small"></span></div>
           <label class="row"><span>Игровой режим <span class="muted small">(пауза мониторинга в игре)</span></span><input type="checkbox" id="set-game" class="switch"></label>
-          <div class="btn-row"><input id="set-game-procs" style="flex:1;min-width:200px" placeholder="cs2.exe, dota2.exe, ..."><button id="btn-save-game" class="btn ghost">💾</button></div>
-          <button id="btn-save-mon" class="btn ghost">💾 Сохранить мониторинг</button>
+          <div class="btn-row"><input id="set-game-procs" style="flex:1;min-width:200px" placeholder="cs2.exe, dota2.exe, ..."><button id="btn-save-game" class="btn ghost"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button></div>
+          <button id="btn-save-mon" class="btn ghost"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>Сохранить мониторинг</button>
         </div>
         <div class="card narrow">
           <div class="sect">ОФОРМЛЕНИЕ</div>
           <div class="btn-row" id="theme-row">
             <button data-theme="scarlet" class="btn ghost">Алый</button>
             <button data-theme="terminal" class="btn ghost">Терминал</button>
-            <button data-theme="amethyst" class="btn ghost">Аметист</button>
+            <button data-theme="neon" class="btn ghost">Неон</button>
+            <button data-theme="vhs" class="btn ghost">VHS</button>
             <button data-theme="vsd" class="btn ghost hidden" id="theme-vsd">VSD</button>
           </div>
           <div class="muted small">Тема применяется мгновенно, без перезапуска.</div>
@@ -173,9 +174,9 @@
           <div class="sect" style="margin-top:12px">СВОЯ ТЕМА</div>
           <div id="custom-theme-grid"></div>
           <div class="btn-row" style="margin-top:8px">
-            <button id="btn-theme-save" class="btn accent">💾 Сохранить тему</button>
-            <button id="btn-theme-export" class="btn ghost">📤 Экспорт</button>
-            <button id="btn-theme-import" class="btn ghost">📥 Импорт</button>
+            <button id="btn-theme-save" class="btn accent"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>Сохранить тему</button>
+            <button id="btn-theme-export" class="btn ghost"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/></svg>Экспорт</button>
+            <button id="btn-theme-import" class="btn ghost"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>Импорт</button>
             <button id="btn-theme-reset" class="btn ghost">↺ Сброс</button>
           </div>
           <label class="row"><span>Funny option</span><input type="checkbox" id="set-funny" class="switch"></label>
@@ -187,19 +188,19 @@
           <div class="sect">ПРИЛОЖЕНИЕ</div>
           <label class="row"><span>Запускать вместе с Windows <span class="muted small">(планировщик, с правами администратора)</span></span><input type="checkbox" id="set-autostart" class="switch"></label>
           <div class="btn-row">
-            <button id="btn-data-folder" class="btn ghost">📂 Открыть папку данных</button>
-            <button id="btn-flush-dns" class="btn ghost">🧹 Сбросить DNS-кэш</button>
+            <button id="btn-data-folder" class="btn ghost"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"/></svg>Открыть папку данных</button>
+            <button id="btn-flush-dns" class="btn ghost"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z"/></svg>Сбросить DNS-кэш</button>
           </div>
           <div class="btn-row" style="margin-top:8px">
-            <button id="btn-shortcut" class="btn ghost">📌 Ярлык на рабочий стол</button>
-            <button id="btn-icon-cache" class="btn ghost">🔄 Обновить кэш иконок</button>
-            <button id="btn-export" class="btn ghost">📤 Экспорт отчёта</button>
+            <button id="btn-shortcut" class="btn ghost"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 10.5a3 3 0 11-6 0 3 3 0 016 0z"/><path d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1115 0z"/></svg>Ярлык на рабочий стол</button>
+            <button id="btn-icon-cache" class="btn ghost"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>Обновить кэш иконок</button>
+            <button id="btn-export" class="btn ghost"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/></svg>Экспорт отчёта</button>
           </div>
           <div class="btn-row" style="margin-top:8px">
-            <button id="btn-updates" class="btn ghost">🔍 Проверить обновления</button>
+            <button id="btn-updates" class="btn ghost"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>Проверить обновления</button>
             <span id="update-info" class="muted small"></span>
           </div>
-          <div class="muted small">Zapret Manager v2.0.0 · Tauri + Rust · ноль рантаймов для установки</div>
+          <div class="muted small">Zapret Manager v2.0.1 · Tauri + Rust · ноль рантаймов для установки</div>
         </div>
       </section>
 
@@ -212,8 +213,12 @@
 <div id="spam-intro" class="hidden"><img id="spam-intro-img" alt=""></div>
 <div id="spam-say" class="hidden"></div>
 <div id="blackout" class="hidden"></div>
-<div id="wizard" class="hidden"><div id="wizard-card"><div id="wizard-title">🔥 Быстрая настройка</div><div id="wizard-sub"></div><div id="wizard-body"></div><div class="btn-row" id="wizard-nav"></div></div></div>
+<div id="wizard" class="hidden"><div id="wizard-card"><div id="wizard-title">Быстрая настройка</div><div id="wizard-sub"></div><div id="wizard-body"></div><div class="btn-row" id="wizard-nav"></div></div></div>
 <div id="tour-tip" class="hidden"></div>
+<div id="crt" class="hidden"></div>
+<div id="vhs-track" class="hidden"></div>
+<div id="vhs-grain" class="hidden"></div>
+<div id="vhs-osd" class="hidden"><span class="rec"></span><span>REC</span><span>CAM 01</span><span id="vhs-date">--.--.--</span><span id="vhs-time">--:--:--</span><span class="muted">SP</span></div>
 <div id="toasts"></div>
 <div id="modal-wrap" class="hidden"><div id="modal-card"><div id="modal-title"></div><div id="modal-body"></div><div class="btn-row" id="modal-btns"></div></div></div>
 <script src="app.js"></script>

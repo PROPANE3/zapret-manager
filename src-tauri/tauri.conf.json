@@ -1,19 +1,20 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Zapret Manager",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "identifier": "com.flowseal.zapretmanager",
   "build": {
     "devUrl": "http://127.0.0.1:1420",
-    "beforeDevCommand": "python -m http.server 1420 --directory frontend",
+    "beforeDevCommand": "",
     "beforeBundleCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File src-tauri\\stamp-manifest.ps1",
     "frontendDist": "../frontend"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "label": "main",
-        "title": "Zapret Manager v2.0.0",
+        "title": "Zapret Manager v2.0.1",
         "width": 1480,
         "height": 860,
         "minWidth": 1000,
@@ -31,12 +32,15 @@
     "targets": "all",
     "createUpdaterArtifacts": true,
     "icon": ["icons/icon.ico", "icons/icon.png"],
-    "resources": ["../assets/funny/*", "../assets/packs/*.zip", "icons/icon.png"],
+    "resources": ["../assets/funny/*", "../assets/packs/*.zip", "../assets/wizard/*", "../assets/music/*", "../assets/terminal/*", "icons/icon.png"],
     "category": "Utility",
     "shortDescription": "Панель управления zapret-discord-youtube",
     "windows": {
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico",
+        "sidebarImage": "icons/wizard.bmp",
+        "languages": ["Russian", "English"]
       }
     }
   },
@@ -45,7 +49,7 @@
       "active": true,
       "dialog": false,
       "endpoints": ["https://github.com/PROPANE3/zapret-manager/releases/latest/download/latest.json"],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZCQ0U2MkNERDZCNjQ0RUIKUldUclJMYld6V0xPKzhlK1M5WHg2THg0Mlc5eUY3RkdITTc0bVM2REU4bTlVUVNuWVFyN1l0bUoK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI4M0UwQjM3NzQwRDM4NkQKUldSdE9BMTBOd3MrS0NlWHRPc1RHZnRLdU8zOHBuY2dXelJHK0JCeVhsdWY4cGFLU1RyMUVUd1MK"
     }
   }
 }

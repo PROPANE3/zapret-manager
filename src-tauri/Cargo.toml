@@ -1,6 +1,6 @@
 [package]
 name = "zapret-manager"
-version = "2.0.0"
+version = "2.0.1"
 description = "Панель управления zapret-discord-youtube (Tauri 2)"
 edition = "2021"
 rust-version = "1.77"

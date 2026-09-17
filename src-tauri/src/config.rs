@@ -36,7 +36,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            zapret_root: String::from(r"D:\Desktop\zapret-discord-youtube-main"),
+            zapret_root: String::new(),
             active_config: String::new(),
             best_scores: HashMap::new(),
             monitor_enabled: true,
@@ -85,21 +85,70 @@ fn config_path() -> PathBuf {
     data_dir().join("config.json")
 }
 
+fn is_zapret_root(p: &std::path::Path) -> bool {
+    p.is_dir() && p.join("service.bat").is_file() && p.join("bin").is_dir()
+}
+
 fn default_root_candidates() -> Vec<String> {
-    let mut out = vec![
-        r"D:\Desktop\zapret-discord-youtube-main".to_string(),
-        r"C:\zapret".to_string(),
-        r"D:\zapret".to_string(),
-    ];
+    let mut out: Vec<String> = Vec::new();
+    // 1. рядом с самим менеджером: его папка или папки-соседи
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            if is_zapret_root(dir) {
+                out.push(dir.to_string_lossy().into_owned());
+            }
+            if let Ok(rd) = std::fs::read_dir(dir) {
+                for e in rd.flatten() {
+                    let p = e.path();
+                    if p.is_dir() && is_zapret_root(&p) {
+                        out.push(p.to_string_lossy().into_owned());
+                    }
+                }
+            }
+        }
+    }
+    // 2. рабочий стол: любая zapret-discord-youtube-*, сначала свежие
     if let Ok(home) = std::env::var("USERPROFILE") {
-        out.insert(
-            1,
-            PathBuf::from(home)
-                .join("Desktop")
-                .join("zapret-discord-youtube-main")
-                .to_string_lossy()
-                .into_owned(),
-        );
+        let desk = PathBuf::from(home).join("Desktop");
+        if let Ok(rd) = std::fs::read_dir(&desk) {
+            let mut v: Vec<(std::time::SystemTime, PathBuf)> = rd
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.is_dir()
+                        && p.file_name()
+                            .and_then(|n| n.to_str())
+                            .map(|n| n.starts_with("zapret-discord-youtube"))
+                            .unwrap_or(false)
+                        && is_zapret_root(p)
+                })
+                .map(|p| {
+                    let mt = std::fs::metadata(&p)
+                        .and_then(|m| m.modified())
+                        .unwrap_or(std::time::UNIX_EPOCH);
+                    (mt, p)
+                })
+                .collect();
+            v.sort_by(|a, b| b.0.cmp(&a.0));
+            for (_, p) in v {
+                out.push(p.to_string_lossy().into_owned());
+            }
+        }
+        for fixed in ["zapret-discord-youtube-main", "zapret"] {
+            let p = desk.join(fixed);
+            if is_zapret_root(&p) {
+                let s = p.to_string_lossy().into_owned();
+                if !out.contains(&s) {
+                    out.push(s);
+                }
+            }
+        }
+    }
+    // 3. корни дисков (старый фолбэк)
+    for fixed in [r"C:\zapret", r"D:\zapret"] {
+        if is_zapret_root(std::path::Path::new(fixed)) {
+            out.push(fixed.to_string());
+        }
     }
     out
 }

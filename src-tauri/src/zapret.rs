@@ -1057,7 +1057,7 @@ pub fn run_diagnostics() -> Vec<DiagRow> {
     }
     let proxy = reg_dword("HKCU", r"Software\Microsoft\Windows\CurrentVersion\Internet Settings", "ProxyEnable").unwrap_or(0) == 1;
     if proxy {
-        rows.push(DiagRow { icon: "⚠".into(), name: "System Proxy".into(), status: "enabled (may interfere)".into(), kind: "warn".into() });
+        rows.push(DiagRow { icon: "!".into(), name: "System Proxy".into(), status: "enabled (may interfere)".into(), kind: "warn".into() });
     } else {
         rows.push(DiagRow { icon: "✓".into(), name: "System Proxy".into(), status: "disabled".into(), kind: "good".into() });
     }
@@ -1066,7 +1066,7 @@ pub fn run_diagnostics() -> Vec<DiagRow> {
     if low.contains("timestamps") && low.contains("enabled") {
         rows.push(DiagRow { icon: "✓".into(), name: "TCP Timestamps".into(), status: "enabled".into(), kind: "good".into() });
     } else {
-        rows.push(DiagRow { icon: "⚠".into(), name: "TCP Timestamps".into(), status: "disabled".into(), kind: "warn".into() });
+        rows.push(DiagRow { icon: "!".into(), name: "TCP Timestamps".into(), status: "disabled".into(), kind: "warn".into() });
     }
     let (_rc, out) = run_cmd(&["tasklist", "/FI", "IMAGENAME eq AdguardSvc.exe"], Duration::from_secs(5));
     if out.contains("AdguardSvc.exe") {
@@ -1127,50 +1127,53 @@ pub fn vpn_status() -> (bool, Vec<String>) {
 }
 
 // ================= ресурсы =================
+// Только реальное потребление САМОЙ программы (её процесса),
+// плюс процесс winws, если запущен. Никаких общесистемных цифр.
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProcStat {
+    pub cpu: Option<f32>,
+    pub ram_mb: Option<u64>,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ResourceStat {
-    pub cpu: Option<f32>,
-    pub ram_mb: Option<u64>,
-    pub gpu: String,
+    pub app: ProcStat,
+    pub winws: Option<ProcStat>,
 }
 
-fn gpu_name() -> String {
-    let base = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}";
-    let (_rc, out) = run_cmd(&["reg", "query", &format!("HKLM\\{base}"), "/s", "/v", "DriverDesc"], Duration::from_secs(8));
-    let mut names: Vec<String> = Vec::new();
-    for line in out.lines() {
-        let t = line.trim();
-        if t.starts_with("DriverDesc") {
-            // формат: DriverDesc    REG_SZ    <имя>
-            let parts: Vec<&str> = t.split_whitespace().collect();
-            if parts.len() >= 3 {
-                let nm = parts[2..].join(" ");
-                if !nm.is_empty() && !names.contains(&nm) {
-                    names.push(nm);
-                }
-            }
-        }
+fn round1(v: f32) -> Option<f32> {
+    if v.is_finite() {
+        Some((v * 10.0).round() / 10.0)
+    } else {
+        None
     }
-    names.join(" / ").chars().take(48).collect()
 }
 
 pub fn resource_status() -> ResourceStat {
-    use sysinfo::{MemoryRefreshKind, RefreshKind, System};
-    let mut sys = System::new_with_specifics(
-        RefreshKind::nothing().with_cpu(sysinfo::CpuRefreshKind::nothing().with_cpu_usage()),
-    );
-    sys.refresh_cpu_usage();
+    use sysinfo::{Pid, ProcessesToUpdate, System};
+    let me = Pid::from_u32(std::process::id());
+    let mut sys = System::new();
+    // CPU считается по дельте: первый замер — база, второй — значение
+    sys.refresh_processes(ProcessesToUpdate::Some(&[me]), true);
     std::thread::sleep(Duration::from_millis(300));
-    sys.refresh_cpu_usage();
-    let cpu = sys.global_cpu_usage();
-    let cpu = if cpu.is_finite() { Some((cpu * 10.0).round() / 10.0) } else { None };
-    let mut mem = System::new_with_specifics(
-        RefreshKind::nothing().with_memory(MemoryRefreshKind::nothing().with_ram()),
-    );
-    mem.refresh_memory();
-    let ram_mb = Some(mem.used_memory() / 1024 / 1024);
-    ResourceStat { cpu, ram_mb, gpu: gpu_name() }
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+    let app = sys
+        .process(me)
+        .map(|p| ProcStat {
+            cpu: round1(p.cpu_usage()),
+            ram_mb: Some(p.memory() / 1024 / 1024),
+        })
+        .unwrap_or(ProcStat { cpu: None, ram_mb: None });
+    let winws = sys
+        .processes()
+        .values()
+        .find(|p| p.name().to_string_lossy().eq_ignore_ascii_case("winws.exe"))
+        .map(|p| ProcStat {
+            cpu: round1(p.cpu_usage()),
+            ram_mb: Some(p.memory() / 1024 / 1024),
+        });
+    ResourceStat { app, winws }
 }
 
 // ================= снапшот lists (diff релиза) =================
@@ -1231,11 +1234,46 @@ pub fn diff_snaps(old: &HashMap<String, String>, new: &HashMap<String, String>) 
 mod tests {
     use super::*;
 
-    const ROOT: &str = r"D:\Desktop\zapret-discord-youtube-main";
+    /// Корень zapret для тестов: перебор реальных папок, пропуск если нет.
+    fn test_root() -> Option<String> {
+        if let Ok(p) = std::env::var("ZAPRET_TEST_ROOT") {
+            if std::path::Path::new(&p).is_dir() {
+                return Some(p);
+            }
+        }
+        let mut cands: Vec<String> = Vec::new();
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            let desk = std::path::Path::new(&home).join("Desktop");
+            if let Ok(rd) = std::fs::read_dir(&desk) {
+                let mut v: Vec<String> = rd
+                    .flatten()
+                    .filter(|e| e.path().is_dir())
+                    .filter_map(|e| e.file_name().into_string().ok())
+                    .filter(|n| n.starts_with("zapret-discord-youtube"))
+                    .collect();
+                v.sort();
+                for n in v {
+                    cands.push(desk.join(n).to_string_lossy().into_owned());
+                }
+            }
+        }
+        for fixed in [
+            r"D:\Desktop\zapret-discord-youtube-main",
+            r"C:\zapret",
+            r"D:\zapret",
+        ] {
+            cands.push(fixed.to_string());
+        }
+        cands.into_iter().find(|p| std::path::Path::new(p).is_dir())
+    }
 
     #[test]
     fn configs_found() {
-        let cfgs = list_configs(ROOT);
+        let Some(root) = test_root() else {
+            println!("SKIP: нет папки zapret");
+            return;
+        };
+        let cfgs = list_configs(&root);
         assert!(!cfgs.is_empty(), "конфиги не найдены");
         assert!(cfgs.iter().any(|c| c.to_lowercase().contains("general")));
         assert!(!cfgs.iter().any(|c| c.to_lowercase().starts_with("service")));
@@ -1249,7 +1287,11 @@ mod tests {
 
     #[test]
     fn targets_parsed() {
-        let t = parse_targets(ROOT);
+        let Some(root) = test_root() else {
+            println!("SKIP: нет папки zapret");
+            return;
+        };
+        let t = parse_targets(&root);
         assert!(t.len() >= 3, "целей мало: {}", t.len());
         assert!(t.iter().any(|(n, _)| n == "DiscordMain"));
     }
@@ -1264,8 +1306,23 @@ mod tests {
     }
 
     #[test]
+    fn resource_self_present() {
+        let s = resource_status();
+        assert!(s.app.ram_mb.unwrap_or(0) > 0, "нет своей RAM");
+        assert!(s.app.cpu.is_some(), "нет своего CPU");
+    }
+
+    #[test]
     fn args_from_general() {
-        let args = build_service_args(ROOT, r"pre-configs\general.bat").expect("парсер пуст");
+        let Some(root) = test_root() else {
+            println!("SKIP: нет папки zapret");
+            return;
+        };
+        let Some(bat) = list_configs(&root).into_iter().find(|c| c.to_lowercase().ends_with(".bat")) else {
+            println!("SKIP: нет .bat");
+            return;
+        };
+        let args = build_service_args(&root, &bat).expect("парсер пуст");
         assert!(args.contains("--"), "нет флагов: {args:.120}");
         assert!(args.contains("--filter"), "нет фильтров: {args:.200}");
         assert!(!args.contains("%GameFilterTCP%"), "переменные не раскрыты");
@@ -1275,9 +1332,13 @@ mod tests {
     #[test]
     fn args_all_configs() {
         // каждый найденный конфиг обязан дать аргументы winws
+        let Some(root) = test_root() else {
+            println!("SKIP: нет папки zapret");
+            return;
+        };
         let mut bad = Vec::new();
-        for c in list_configs(ROOT) {
-            if build_service_args(ROOT, &c).is_err() {
+        for c in list_configs(&root) {
+            if build_service_args(&root, &c).is_err() {
                 bad.push(c);
             }
         }
@@ -1298,7 +1359,11 @@ mod tests {
 
     #[test]
     fn snapshot_lists_live() {
-        let snap = snapshot_lists(ROOT);
+        let Some(root) = test_root() else {
+            println!("SKIP: нет папки zapret");
+            return;
+        };
+        let snap = snapshot_lists(&root);
         assert!(!snap.is_empty(), "снапшот пуст");
     }
 }

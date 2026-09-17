@@ -113,6 +113,7 @@ pub async fn probe_many(
     repeat: u32,
     workers: usize,
     cancel: &AtomicBool,
+    on_row: &mut (dyn FnMut(&str, Option<u64>) + Send),
 ) -> Vec<ProbeRow> {
     let ping_cap = ping_thr.min(1500);
     let workers = workers.clamp(2, 16);
@@ -134,6 +135,7 @@ pub async fn probe_many(
             break;
         }
         if let Ok(row) = r {
+            on_row(&row.name, row.ping_ms);
             map.insert(row.name.clone(), row);
         }
     }
@@ -202,6 +204,7 @@ async fn probe_bat(
     targets: &[(String, String)],
     logs: &mut Vec<String>,
     screen_only: bool,
+    on_row: &mut (dyn FnMut(&str, Option<u64>) + Send),
 ) -> BatResult {
     zapret::start_winws_hidden(&ctx.root, bat);
     if !wait_winws_logged_secs(bat, logs) {
@@ -222,6 +225,7 @@ async fn probe_bat(
         if screen_only { 1 } else { ctx.repeat },
         if screen_only { 4 } else { ctx.workers },
         &ctx.cancel,
+        on_row,
     )
     .await;
     let (ok, fail, ping_ok) = summarize(&rows);
@@ -234,14 +238,22 @@ async fn probe_bat(
 }
 
 /// Полная проверка списка. progress(done,total,name,score). Возвращает (results, abort_reason, logs).
-pub async fn run_check<F>(ctx: &Ctx, bats: Vec<String>, mode: &str, mut progress: F) -> (HashMap<String, BatResult>, String, Vec<String>)
+/// on_row(bat, target, ping_ms) — мгновенный пинг каждой цели, без ожидания счёта.
+pub async fn run_check<F, G>(
+    ctx: &Ctx,
+    bats: Vec<String>,
+    mode: &str,
+    mut progress: F,
+    mut on_row: G,
+) -> (HashMap<String, BatResult>, String, Vec<String>)
 where
     F: FnMut(usize, usize, &str, i64),
+    G: FnMut(&str, &str, Option<u64>) + Send,
 {
     let mut logs = Vec::new();
     let mut out: HashMap<String, BatResult> = HashMap::new();
     if !network_alive() {
-        logs.push("⛔ Нет сети (не пингуются даже 1.1.1.1/8.8.8.8) — проверка прервана.".into());
+        logs.push("[!] Нет сети (не пингуются даже 1.1.1.1/8.8.8.8) — проверка прервана.".into());
         return (out, "nonetwork".into(), logs);
     }
     let mut targets = zapret::parse_targets(&ctx.root);
@@ -251,9 +263,9 @@ where
     zapret::stop_winws();
     std::thread::sleep(Duration::from_millis(100));
     if mode == "ultra" {
-        ultra_loop(ctx, bats, &targets, &mut progress, &mut logs, &mut out).await;
+        ultra_loop(ctx, bats, &targets, &mut progress, &mut on_row, &mut logs, &mut out).await;
     } else {
-        seq_loop(ctx, bats, &targets, &mut progress, &mut logs, &mut out).await;
+        seq_loop(ctx, bats, &targets, &mut progress, &mut on_row, &mut logs, &mut out).await;
     }
     zapret::stop_winws();
     (out, String::new(), logs)
@@ -264,6 +276,7 @@ async fn seq_loop<F>(
     mut bats: Vec<String>,
     targets: &[(String, String)],
     progress: &mut F,
+    on_row: &mut (dyn FnMut(&str, &str, Option<u64>) + Send),
     logs: &mut Vec<String>,
     out: &mut HashMap<String, BatResult>,
 ) where
@@ -287,14 +300,14 @@ async fn seq_loop<F>(
             break;
         }
         logs.push(format!("[{}/{}] Запуск {} …", idx + 1, total, bat));
-        let mut r = probe_bat(ctx, bat, targets, logs, false).await;
+        let mut r = probe_bat(ctx, bat, targets, logs, false, &mut |n, pm| on_row(bat, n, pm)).await;
         if r.started {
             let dt_ok = r.ok;
             logs.push(format!("  {bat}: HTTP OK={} ERR={} PingOK={} score={}", dt_ok, r.fail, r.ping_ok, r.score));
             if r.ok == 0 && r.ping_ok == 0 && r.fail > 0 {
                 dead_chain += 1;
                 if dead_chain >= 3 {
-                    logs.push("⛔ Три конфига подряд без единого пакета — сеть упала. Прерываю.".into());
+                    logs.push("[!] Три конфига подряд без единого пакета — сеть упала. Прерываю.".into());
                     zapret::stop_winws();
                     break;
                 }
@@ -316,6 +329,7 @@ async fn ultra_loop<F>(
     mut bats: Vec<String>,
     targets: &[(String, String)],
     progress: &mut F,
+    on_row: &mut (dyn FnMut(&str, &str, Option<u64>) + Send),
     logs: &mut Vec<String>,
     out: &mut HashMap<String, BatResult>,
 ) where
@@ -357,7 +371,7 @@ async fn ultra_loop<F>(
             break;
         }
         logs.push(format!("[отсев {}/{}] {} …", idx + 1, total, bat));
-        let r = probe_bat(ctx, bat, &screen, logs, true).await;
+        let r = probe_bat(ctx, bat, &screen, logs, true, &mut |n, pm| on_row(bat, n, pm)).await;
         let s = if r.started { r.score } else { -1 };
         screened.push((bat.clone(), s));
         progress(idx + 1, grand, bat, s);
@@ -377,7 +391,7 @@ async fn ultra_loop<F>(
             break;
         }
         logs.push(format!("[финал {}/{}] {} …", j + 1, finalists.len(), bat));
-        let r = probe_bat(ctx, bat, targets, logs, false).await;
+        let r = probe_bat(ctx, bat, targets, logs, false, &mut |n, pm| on_row(bat, n, pm)).await;
         progress(total + j + 1, grand, bat, r.score);
         out.insert(bat.clone(), r);
         zapret::stop_winws();
@@ -399,7 +413,7 @@ pub async fn test_current(root: &str, ping_thr: u64, cancel: &AtomicBool) -> (Ve
             (n.clone(), format!("PING:{h}"))
         })
         .collect();
-    let rows = probe_many(&ping_targets, Duration::from_secs(2), ping_thr, 1, 4, cancel).await;
+    let rows = probe_many(&ping_targets, Duration::from_secs(2), ping_thr, 1, 4, cancel, &mut |_, _| {}).await;
     let bad = rows.iter().filter(|r| !r.ping_ok).count() as u64;
     (rows, bad)
 }
