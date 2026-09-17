@@ -335,6 +335,31 @@ function Install-All {
             Copy-Item -Path (Join-Path $srcAssets "*") -Destination $dstAssets -Recurse -Force
             Add-Log "Ассеты скопированы."
         }
+        # UAC-манифест (иначе sc -> FAILED 5): штампуем установленную копию
+        try {
+            $mt = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Directory -ErrorAction SilentlyContinue |
+                Sort-Object Name -Descending |
+                ForEach-Object { Join-Path $_.FullName "x64\mt.exe" } |
+                Where-Object { Test-Path -LiteralPath $_ } |
+                Select-Object -First 1
+            $mf = Join-Path $Root "src-tauri\app.manifest"
+            if ($mt -and (Test-Path -LiteralPath $mf)) {
+                Set-Status "[2/6] Программа: вшиваю UAC-манифест..."
+                & $mt -nologo -manifest $mf ("-outputresource:" + $script:installedExe + ";#1") | Out-Null
+                $chk = Join-Path $env:TEMP "zm-manifest-check.xml"
+                & $mt -nologo ("-inputresource:" + $script:installedExe + ";#1") ("-out:" + $chk) | Out-Null
+                if ((Get-Content -LiteralPath $chk -Raw -ErrorAction SilentlyContinue) -match "requireAdministrator") {
+                    Add-Log "UAC-манифест вшит."
+                } else {
+                    Add-Log "Манифест не вшился!"
+                }
+                Remove-Item -LiteralPath $chk -Force -ErrorAction SilentlyContinue
+            } else {
+                Add-Log "Нет mt.exe: UAC не вшит."
+            }
+        } catch {
+            Add-Log ("Не вшил UAC: " + $_.Exception.Message)
+        }
 
         # [3/6] zapret
         Set-Status "[3/6] Папка zapret..."; Set-Prog 50

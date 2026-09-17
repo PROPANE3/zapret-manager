@@ -619,13 +619,13 @@ async fn run_check(
         &ctx,
         bats,
         &mode,
-        |done, total, name, score| {
+        |done, total, name, score, grade| {
             if state.cancel.load(Ordering::Relaxed) {
                 cancel_flag.store(true, Ordering::Relaxed);
             }
             let _ = app_c.emit(
                 "check-progress",
-                engine::ProgressEvent { done, total, name: name.to_string(), score },
+                engine::ProgressEvent { done, total, name: name.to_string(), score, grade },
             );
         },
         |bat, name, ping_ms| {

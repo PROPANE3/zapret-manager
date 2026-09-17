@@ -317,6 +317,31 @@ if (Test-Path -LiteralPath $srcAssets) {
     Copy-Item -Path (Join-Path $srcAssets "*") -Destination $dstAssets -Recurse -Force
     Write-Ok "Ассеты на месте"
 }
+# UAC-манифест: --no-bundle сборки его не штампуют (только beforeBundleCommand),
+# а без requireAdministrator служба не ставится (sc -> FAILED 5).
+try {
+    $mt = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Directory -ErrorAction SilentlyContinue |
+        Sort-Object Name -Descending |
+        ForEach-Object { Join-Path $_.FullName "x64\mt.exe" } |
+        Where-Object { Test-Path -LiteralPath $_ } |
+        Select-Object -First 1
+    $mf = Join-Path $root "src-tauri\app.manifest"
+    if ($mt -and (Test-Path -LiteralPath $mf)) {
+        & $mt -nologo -manifest $mf "-outputresource:$installed;#1" | Out-Null
+        $chk = Join-Path $env:TEMP "zm-manifest-check.xml"
+        & $mt -nologo "-inputresource:$installed;#1" "-out:$chk" | Out-Null
+        if ((Get-Content -LiteralPath $chk -Raw -ErrorAction SilentlyContinue) -match "requireAdministrator") {
+            Write-Ok "UAC-манифест вшит (запуск будет с запросом прав)"
+        } else {
+            Write-Warn "Манифест не вшился: проверьте вручную"
+        }
+        Remove-Item -LiteralPath $chk -Force -ErrorAction SilentlyContinue
+    } else {
+        Write-Warn "Нет mt.exe/манифеста: UAC не вшит, служба без прав не встанет"
+    }
+} catch {
+    Write-Warn "Не вшил UAC-манифест"
+}
 
 # [3/6] zapret
 Write-Host "[3/6] Папка zapret..." -ForegroundColor Cyan

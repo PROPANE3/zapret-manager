@@ -37,6 +37,10 @@ fn run_cmd_owned(argv: &[String], timeout: Duration) -> (i32, String) {
         Ok(c) => c,
         Err(e) => return (1, e.to_string()),
     };
+    wait_child(child, timeout)
+}
+
+fn wait_child(child: std::process::Child, timeout: Duration) -> (i32, String) {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let out = child.wait_with_output();
@@ -53,9 +57,32 @@ fn run_cmd_owned(argv: &[String], timeout: Duration) -> (i32, String) {
     }
 }
 
-/// `cmd /c <line>` скрыто (для составных sc-цепочек, как shell=True в Python).
+/// `cmd /c <line>` скрыто (как shell=True в Python).
+/// ВАЖНО: строка идёт байт-в-байт через raw_arg. Обычный args() экранирует
+/// кавычки как \" , а cmd.exe это не понимает: разбор цепочки ломается
+/// (симптом: `reg add ... /d "general (ALT10)"` -> ERROR: Invalid syntax).
 pub fn run_shell(line: &str, timeout: Duration) -> (i32, String) {
-    run_cmd(&["cmd", "/c", line], timeout)
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let mut cmd = Command::new("cmd");
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd.raw_arg("/c");
+        cmd.raw_arg(line);
+        let child = match cmd
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => return (1, e.to_string()),
+        };
+        return wait_child(child, timeout);
+    }
+    #[cfg(not(windows))]
+    {
+        run_cmd(&["cmd", "/c", line], timeout)
+    }
 }
 
 // ================= конфиги =================
@@ -836,9 +863,17 @@ pub fn start_winws_hidden(zapret_root: &str, bat_name: &str) -> bool {
     let fp = Path::new(zapret_root).join(bat_name);
     if fp.exists() {
         let mut cmd = Command::new("cmd");
-        cmd.args(["/c", &fp.to_string_lossy()]);
         #[cfg(windows)]
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        {
+            cmd.creation_flags(CREATE_NO_WINDOW);
+            // raw_arg: путь с пробелами/скобками иначе бьётся Rust-экранированием
+            cmd.raw_arg("/c");
+            cmd.raw_arg(fp.to_string_lossy().as_ref());
+        }
+        #[cfg(not(windows))]
+        {
+            cmd.args(["/c", &fp.to_string_lossy()]);
+        }
         cmd.stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
@@ -1310,6 +1345,20 @@ mod tests {
         let s = resource_status();
         assert!(s.app.ram_mb.unwrap_or(0) > 0, "нет своей RAM");
         assert!(s.app.cpu.is_some(), "нет своего CPU");
+    }
+
+    #[test]
+    fn shell_keeps_quotes_verbatim() {
+        // регрессия: кавычки/скобки в строке для cmd должны доходить как есть
+        // (иначе `reg add ... /d "general (ALT10)"` умирал с Invalid syntax).
+        let (rc, out) = run_shell(
+            "echo \"general (ALT10)\" & echo chain-ok",
+            std::time::Duration::from_secs(10),
+        );
+        assert_eq!(rc, 0);
+        assert!(out.contains("general (ALT10)"), "кавычки побились: {out:?}");
+        assert!(!out.contains('\\'), "появились бэкслэши экранирования: {out:?}");
+        assert!(out.contains("chain-ok"), "цепочка & порвалась: {out:?}");
     }
 
     #[test]

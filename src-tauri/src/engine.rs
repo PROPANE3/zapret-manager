@@ -40,6 +40,7 @@ pub struct ProgressEvent {
     pub total: usize,
     pub name: String,
     pub score: i64,
+    pub grade: String,
 }
 
 pub struct Ctx {
@@ -247,7 +248,7 @@ pub async fn run_check<F, G>(
     mut on_row: G,
 ) -> (HashMap<String, BatResult>, String, Vec<String>)
 where
-    F: FnMut(usize, usize, &str, i64),
+    F: FnMut(usize, usize, &str, i64, String),
     G: FnMut(&str, &str, Option<u64>) + Send,
 {
     let mut logs = Vec::new();
@@ -280,7 +281,7 @@ async fn seq_loop<F>(
     logs: &mut Vec<String>,
     out: &mut HashMap<String, BatResult>,
 ) where
-    F: FnMut(usize, usize, &str, i64),
+    F: FnMut(usize, usize, &str, i64, String),
 {
     // сначала конфиги с лучшими прошлыми очками
     let cfg = config::load();
@@ -317,7 +318,7 @@ async fn seq_loop<F>(
         } else {
             r.score = -1;
         }
-        progress(idx + 1, total, bat, r.score);
+        progress(idx + 1, total, bat, r.score, grade_of_bat(&r));
         out.insert(bat.clone(), r);
         zapret::stop_winws();
         std::thread::sleep(Duration::from_millis(100));
@@ -333,7 +334,7 @@ async fn ultra_loop<F>(
     logs: &mut Vec<String>,
     out: &mut HashMap<String, BatResult>,
 ) where
-    F: FnMut(usize, usize, &str, i64),
+    F: FnMut(usize, usize, &str, i64, String),
 {
     let mut screen: Vec<_> = targets
         .iter()
@@ -374,7 +375,7 @@ async fn ultra_loop<F>(
         let r = probe_bat(ctx, bat, &screen, logs, true, &mut |n, pm| on_row(bat, n, pm)).await;
         let s = if r.started { r.score } else { -1 };
         screened.push((bat.clone(), s));
-        progress(idx + 1, grand, bat, s);
+        progress(idx + 1, grand, bat, s, grade_of_bat(&r));
         zapret::stop_winws();
         std::thread::sleep(Duration::from_millis(100));
         if s == (screen.len() as i64) * 11 {
@@ -392,7 +393,7 @@ async fn ultra_loop<F>(
         }
         logs.push(format!("[финал {}/{}] {} …", j + 1, finalists.len(), bat));
         let r = probe_bat(ctx, bat, targets, logs, false, &mut |n, pm| on_row(bat, n, pm)).await;
-        progress(total + j + 1, grand, bat, r.score);
+        progress(total + j + 1, grand, bat, r.score, grade_of_bat(&r));
         out.insert(bat.clone(), r);
         zapret::stop_winws();
         std::thread::sleep(Duration::from_millis(100));
@@ -416,6 +417,14 @@ pub async fn test_current(root: &str, ping_thr: u64, cancel: &AtomicBool) -> (Ve
     let rows = probe_many(&ping_targets, Duration::from_secs(2), ping_thr, 1, 4, cancel, &mut |_, _| {}).await;
     let bad = rows.iter().filter(|r| !r.ping_ok).count() as u64;
     (rows, bad)
+}
+
+/// Оценка готового результата для прогресса/телика (как в проверке Python).
+fn grade_of_bat(r: &BatResult) -> String {
+    if !r.started {
+        return "Не работает".into();
+    }
+    grade_of(&r.rows).2.to_string()
 }
 
 pub fn grade_of(rows: &[ProbeRow]) -> (Option<u64>, Option<u64>, &'static str) {

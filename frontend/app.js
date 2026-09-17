@@ -572,7 +572,22 @@ $("set-secret").addEventListener("change", async (e) => {
 
 /* ----- funny option: телик + фон + иконка ----- */
 const FUN = { files: [], bgTimer: null, bgIdx: 0 };
-const TV_BY_GRADE = { "Отличный": "excellent.gif", "Хороший": "good.gif", "Средний": "normal.gif", "Плохой": "bad.gif", "Не работает": "no_responce.gif" };
+const TV_POOLS = {
+  idle: ["idle_gif.gif"],
+  no_response: ["no_responce.gif", "no_responce_2.gif"],
+  bad: ["bad.gif"], normal: ["normal.gif"], good: ["good.gif"],
+  excellent: ["excellent.gif", "excelent_2.gif"],
+};
+const GRADE_TO_KEY = { "Не работает": "no_response", "Плохой": "bad", "Средний": "normal", "Хороший": "good", "Отличный": "excellent" };
+const TV_IDX = {};
+/* Гифка телика по оценке текущего конфига; вариации _2 ротируются при каждом показе. */
+async function funTvShow(key) {
+  if (!S.cfg?.silly_mode) return;
+  const pool = TV_POOLS[key] || TV_POOLS.idle;
+  const i = ((TV_IDX[key] ?? -1) + 1) % pool.length;
+  TV_IDX[key] = i;
+  try { $("tv-screen").src = await imgUrl("funny_image", { name: pool[i] }); } catch (_) {}
+}
 
 async function funApply() {
   const on = !!S.cfg.silly_mode;
@@ -584,7 +599,7 @@ async function funApply() {
   try {
     FUN.files = await api("funny_list");
     $("tv-frame").src = await imgUrl("funny_image", { name: "tv_ts_screen.png" });
-    $("tv-screen").src = await imgUrl("funny_image", { name: "idle_gif.gif" });
+    await funTvShow("idle");
     // слева всегда только bg_g
     const bg = FUN.files.includes("bg_g.gif") ? "bg_g.gif"
       : (FUN.files.includes("idle_gif.gif") ? "idle_gif.gif" : null);
@@ -593,16 +608,6 @@ async function funApply() {
       $("gal-fun").classList.remove("hidden");
     }
   } catch (_) {}
-}
-function funGradeScreen(results) {
-  if (!S.cfg.silly_mode) return;
-  const order = ["Отличный", "Хороший", "Средний", "Плохой", "Не работает"];
-  let best = "Не работает";
-  for (const [, r] of Object.entries(results || {})) {
-    if (order.indexOf(r.grade) < order.indexOf(best)) best = r.grade;
-  }
-  const f = TV_BY_GRADE[best] || "idle_gif.gif";
-  imgUrl("funny_image", { name: f }).then((u) => { $("tv-screen").src = u; }).catch(() => {});
 }
 /* ----- фоновая музыка секретных тем (loop) ----- */
 const MUSIC = { el: null, part: 0, cache: {} };
@@ -1652,6 +1657,8 @@ async function boot() {
     $("prog-fill").style.width = (100 * p.done / Math.max(1, p.total)) + "%";
     $("prog-label").textContent = `[${p.done}/${p.total}] ${p.name} — score ${p.score}`;
     upsertLive(p.name, p.score);
+    const tvKey = GRADE_TO_KEY[p.grade];
+    if (tvKey) funTvShow(tvKey);
   });
   await listen("probe-ping", (e) => {
     const p = e.payload || {};
@@ -1659,7 +1666,6 @@ async function boot() {
   });
   await listen("check-done", (e) => {
     renderResults(e.payload.results || {});
-    funGradeScreen(e.payload.results || {});
     setChecking(false);
     $("prog-fill").style.width = "100%";
   });
