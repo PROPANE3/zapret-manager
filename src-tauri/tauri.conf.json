@@ -30,7 +30,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "createUpdaterArtifacts": true,
+    "createUpdaterArtifacts": "v1Compatible",
     "icon": ["icons/icon.ico", "icons/icon.png"],
     "resources": ["../assets/funny/*", "../assets/packs/*.zip", "../assets/wizard/*", "../assets/music/*", "../assets/terminal/*", "icons/icon.png"],
     "category": "Utility",
@@ -49,7 +49,7 @@
       "active": true,
       "dialog": false,
       "endpoints": ["https://github.com/PROPANE3/zapret-manager/releases/latest/download/latest.json"],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI4M0UwQjM3NzQwRDM4NkQKUldSdE9BMTBOd3MrS0NlWHRPc1RHZnRLdU8zOHBuY2dXelJHK0JCeVhsdWY4cGFLU1RyMUVUd1MK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEYzOEE1MEJGMDIxNENEM0MKUldROHpSUUN2MUNLODZtWEpDUHZGY25vRHcwV2RScDhIUXZlNVl4Y2hHZFpCZHYxektMQTArbWcK"
     }
   }
 }

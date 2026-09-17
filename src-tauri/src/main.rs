@@ -1363,6 +1363,7 @@ fn main() {
             }
         }))
         .plugin(tauri_plugin_window_state::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(CheckState { cancel: Arc::new(AtomicBool::new(false)), running: AtomicBool::new(false) })
         .manage(MonitorState {
             handle: Mutex::new(None),

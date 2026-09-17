@@ -1184,8 +1184,9 @@ $("btn-export").addEventListener("click", async () => {
 $("btn-updates").addEventListener("click", async () => {
   $("update-info").textContent = "Проверяю…";
   $("update-info").innerHTML = "";
+  let u = null;
   try {
-    const u = await api("check_updates");
+    u = await api("check_updates");
     if (u.zapret_tag) {
       const b = document.createElement("button");
       b.className = "btn ghost"; b.textContent = `↓ zapret ${u.zapret_tag}`;
@@ -1210,7 +1211,12 @@ $("btn-updates").addEventListener("click", async () => {
       $("update-info").textContent = "Всё свежее.";
     }
   } catch (_) {
-    if (!$("update-info").children.length) $("update-info").textContent = "Не удалось проверить.";
+    if (u && u.app_version) {
+      const b = document.createElement("button");
+      b.className = "btn ghost"; b.textContent = `↓ Менеджер v${u.app_version} (вручную)`;
+      b.addEventListener("click", () => api("open_url", { url: u.app_url }));
+      $("update-info").appendChild(b);
+    } else if (!$("update-info").children.length) $("update-info").textContent = "Не удалось проверить.";
   }
 });
 
