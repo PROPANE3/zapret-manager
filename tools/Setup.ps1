@@ -270,6 +270,10 @@ if ($Rebuild) {
     Write-Inf "Пересобираю из исходников (несколько минут)..."
     $env:PATH += ";$HOME\.cargo\bin"
     if (!(Get-Command cargo -ErrorAction SilentlyContinue)) { Write-Err "Нет Rust (https://rustup.rs). Уберите флаг -Rebuild."; exit 1 }
+    $keyFile = Join-Path $HOME ".tauri\zapret-manager.key"
+    if (Test-Path -LiteralPath $keyFile) { $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -LiteralPath $keyFile -Raw }
+    $pwFile = Join-Path $HOME ".tauri\zapret-manager.pw.txt"
+    if (Test-Path -LiteralPath $pwFile) { $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = Get-Content -LiteralPath $pwFile -Raw }
     Push-Location (Join-Path $root "src-tauri")
     try {
         if (!(Get-Command cargo-tauri -ErrorAction SilentlyContinue)) {

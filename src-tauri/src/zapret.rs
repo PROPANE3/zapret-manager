@@ -77,7 +77,7 @@ pub fn run_shell(line: &str, timeout: Duration) -> (i32, String) {
             Ok(c) => c,
             Err(e) => return (1, e.to_string()),
         };
-        return wait_child(child, timeout);
+        wait_child(child, timeout)
     }
     #[cfg(not(windows))]
     {
@@ -589,7 +589,10 @@ pub fn build_service_args(zapret_root: &str, bat_name: &str) -> Result<String, S
         while j > 0 && bytes[j - 1].is_ascii_alphabetic() {
             j -= 1;
         }
-        let word = &t[j..i];
+        while j > 0 && !t.is_char_boundary(j) {
+            j -= 1;
+        }
+        let word = t.get(j..i).unwrap_or("");
         let wl = word.to_lowercase();
         let is_kw = wl.is_empty()
             || ["pause", "exit", "goto", "popd", "endlocal"].contains(&wl.as_str());
@@ -604,8 +607,17 @@ pub fn build_service_args(zapret_root: &str, bat_name: &str) -> Result<String, S
             k -= 1;
         }
         if had_sep && is_kw {
-            args = t[..k].trim_end().to_string();
-            continue;
+            let mut kk = k;
+            while kk > 0 && !t.is_char_boundary(kk) {
+                kk -= 1;
+            }
+            match t.get(..kk) {
+                Some(s) if !s.trim_end().is_empty() => {
+                    args = s.trim_end().to_string();
+                    continue;
+                }
+                _ => break,
+            }
         }
         args = t.to_string();
         break;
@@ -1237,7 +1249,7 @@ pub fn snapshot_lists(zapret_root: &str) -> HashMap<String, String> {
         }
         names.sort();
         for n in names {
-            if let Ok(data) = std::fs::read(&d.join(&n)) {
+            if let Ok(data) = std::fs::read(d.join(&n)) {
                 snap.insert(n, format!("{:016x}", fnv1a64(&data)));
             }
         }

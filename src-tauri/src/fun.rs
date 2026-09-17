@@ -2,7 +2,7 @@
 //! Порт Python-версии: в вебе GIF играют сами (<img>), шифр читает zip-crate.
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // ---------- пути к ассетам ----------
 
@@ -92,7 +92,7 @@ pub fn theme_music(name: &str) -> Result<String, String> {
     data_url(&p, "audio/mpeg")
 }
 
-fn safe_name(dir: &PathBuf, name: &str, exts: &[&str]) -> Option<PathBuf> {
+fn safe_name(dir: &Path, name: &str, exts: &[&str]) -> Option<PathBuf> {
     if name.contains(['/', '\\', '\0']) || name.contains("..") {
         return None;
     }

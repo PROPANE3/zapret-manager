@@ -160,6 +160,9 @@ function pingColor(pm) {
 }
 
 async function refreshActiveBar() {
+  if (S._abInflight) return;
+  S._abInflight = true;
+  try {
   const st = await api("get_service_status");
   const active = S.cfg.active_config || st.strategy || "не выбран";
   $("active-name").textContent = active;
@@ -224,6 +227,7 @@ async function refreshActiveBar() {
     if (r.winws) parts.push(`winws: CPU ${r.winws.cpu?.toFixed(0) ?? "—"}% • RAM ${r.winws.ram_mb ?? "—"} МБ`);
     $("res-line").textContent = parts.join(" • ");
   } catch (_) {}
+  } finally { S._abInflight = false; }
 }
 function setPill(text, color) {
   const p = $("status-pill");
@@ -501,6 +505,8 @@ async function setTheme(name, save = true) {
 /* Оверлеи тем: CRT для терминала, OSD+трекинг для VHS, прячем фон у маскота. */
 function syncThemeOverlays() {
   const t = document.documentElement.dataset.theme;
+  const prev = syncThemeOverlays._t;
+  syncThemeOverlays._t = t;
   const crt = $("crt");
   if (crt) crt.classList.toggle("hidden", t !== "terminal");
   const osd = $("vhs-osd");
@@ -512,7 +518,7 @@ function syncThemeOverlays() {
   if (t === "terminal") {
     const g = $("gal-fun");
     if (g) g.classList.add("hidden");
-  } else {
+  } else if (prev === "terminal") {
     try { funApply(); } catch (_) {}
   }
 }
@@ -784,6 +790,7 @@ function spamSay() {
 function spamFreeze() {
   const img = $("gal-spam");
   if (!img || img.classList.contains("hidden") || !img.src || img.dataset.frozen) return;
+  if (!img.complete || !img.naturalWidth) return;
   try {
     const c = document.createElement("canvas");
     c.width = img.naturalWidth || 220;
@@ -1632,6 +1639,12 @@ async function boot() {
   S.cfg = await api("get_config");
   if (S.cfg.theme === "amethyst") S.cfg.theme = "neon";
   if (S.cfg.vsd_prev_theme === "amethyst") S.cfg.vsd_prev_theme = "neon";
+  api("get_version").then((v) => {
+    const f = $("ver-foot");
+    if (f) f.textContent = `v${v} · Tauri`;
+    const a = $("ver-app");
+    if (a) a.textContent = `Zapret Manager v${v} · Tauri + Rust · ноль рантаймов для установки`;
+  }).catch(() => {});
   applyFont();
   if (S.cfg.theme === "custom" && S.cfg.custom_theme && Object.keys(S.cfg.custom_theme).length) applyCustomTheme();
   else applyTheme(S.cfg.theme || "scarlet");
@@ -1687,6 +1700,11 @@ async function boot() {
     }
   });
   setInterval(refreshActiveBar, 15000);
+  // браузер режет автоплей без жеста: первый клик досылает музыку, если она встала
+  document.addEventListener("pointerdown", function _mresume() {
+    document.removeEventListener("pointerdown", _mresume);
+    try { if (SPAM.on && MUSIC.el && MUSIC.el.paused) MUSIC.el.play().catch(() => {}); } catch (_) {}
+  });
   setInterval(() => {
     if (document.documentElement.dataset.theme !== "vhs") return;
     const el = $("vhs-time");

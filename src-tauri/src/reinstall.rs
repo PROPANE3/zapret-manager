@@ -270,7 +270,7 @@ pub async fn run(app: tauri::AppHandle, root: String) -> ReinstallDone {
                     }
                     done += chunk.len() as u64;
                     if total > 0 {
-                        let pct = done * 100 / total;
+                        let pct = done.saturating_mul(100).checked_div(total).unwrap_or(100);
                         if pct >= last_pct + 5 {
                             last_pct = pct;
                             emit(&app, "progress", &format!("{pct}% ({} МБ)", done / 1024 / 1024));

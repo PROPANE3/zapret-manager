@@ -129,7 +129,7 @@ fn default_root_candidates() -> Vec<String> {
                     (mt, p)
                 })
                 .collect();
-            v.sort_by(|a, b| b.0.cmp(&a.0));
+            v.sort_by_key(|entry| std::cmp::Reverse(entry.0));
             for (_, p) in v {
                 out.push(p.to_string_lossy().into_owned());
             }
@@ -188,10 +188,7 @@ pub fn save(cfg: &AppConfig) {
 
 /// Первый подходящий корень zapret (кнопка «Найти» в настройках).
 pub fn autodetect_root() -> Option<String> {
-    for cand in default_root_candidates() {
-        if std::path::Path::new(&cand).is_dir() {
-            return Some(cand);
-        }
-    }
-    None
+    default_root_candidates()
+        .into_iter()
+        .find(|cand| std::path::Path::new(cand).is_dir())
 }

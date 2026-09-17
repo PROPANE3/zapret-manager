@@ -74,8 +74,27 @@ fn ts_now() -> String {
     format!("{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}", t / 3600, (t / 60) % 60, t % 60)
 }
 
+/// Лог без тормозов: режем хвост, если файл распух (>512 КБ оставляем ~256 КБ).
+fn trim_log(path: &std::path::Path) {
+    const MAX: u64 = 512 * 1024;
+    const KEEP: u64 = 256 * 1024;
+    let Ok(md) = std::fs::metadata(path) else { return };
+    if md.len() <= MAX {
+        return;
+    }
+    let Ok(text) = std::fs::read_to_string(path) else { return };
+    let cut = text.len().saturating_sub(KEEP as usize);
+    let mut start = cut;
+    while start < text.len() && !text.is_char_boundary(start) {
+        start += 1;
+    }
+    let start = text[start..].find('\n').map(|p| start + p + 1).unwrap_or(start);
+    let _ = std::fs::write(path, &text[start..]);
+}
+
 pub(crate) fn log_action(text: &str, kind: &str) {
     let _ = std::fs::create_dir_all(config::data_dir());
+    trim_log(&actions_path());
     let line = format!("[{}] [{}] {}\n", ts_now(), kind, text);
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -89,6 +108,7 @@ pub(crate) fn log_action(text: &str, kind: &str) {
 
 fn log_switch(text: &str) {
     let _ = std::fs::create_dir_all(config::data_dir());
+    trim_log(&switches_path());
     let line = format!("[{}] {}\n", ts_now(), text);
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -161,7 +181,7 @@ pub struct ListEntry {
 
 #[tauri::command]
 fn get_version() -> String {
-    "2.0.0".into()
+    env!("CARGO_PKG_VERSION").into()
 }
 
 #[tauri::command]
@@ -488,7 +508,7 @@ fn check_updates() -> UpdateInfo {
     }
     if let Ok(text) = http_get_text("https://raw.githubusercontent.com/PROPANE3/zapret-manager/main/version.txt", 15) {
         let ver = text.trim().to_string();
-        if !ver.is_empty() && ver != "2.0.0" {
+        if !ver.is_empty() && ver != env!("CARGO_PKG_VERSION") {
             info.app_version = ver;
         }
     }
@@ -958,7 +978,7 @@ fn list_lists() -> Vec<ListEntry> {
             }
         }
     }
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|e| e.name.to_lowercase());
     out
 }
 
