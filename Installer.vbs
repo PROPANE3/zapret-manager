@@ -1,5 +1,5 @@
-' Zapret Manager v2 — скрытый запуск установщика (без терминала).
-' Двойной клик по Installer.bat вызывает этот файл.
+' Zapret Manager v2 - hidden launcher, no console window.
+' Double-click this file to open the installer window.
 Option Explicit
 Dim fso, dir, sh
 Set fso = CreateObject("Scripting.FileSystemObject")

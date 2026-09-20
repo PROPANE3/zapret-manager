@@ -678,6 +678,7 @@ async fn run_check(
     config::save(&cfg2);
     save_check_history(&cfg2, &mode, &results);
     state.running.store(false, Ordering::Relaxed);
+    rebuild_tray(&app);
     let done = CheckDone { results: to_frontend(&results), aborted, log: logs };
     let _ = app.emit("check-done", &done);
     Ok(done)
@@ -1357,6 +1358,139 @@ async fn app_update_install(app: tauri::AppHandle) -> Result<String, String> {
     app.restart();
 }
 
+// ================= трей: статус + конфиги + показать/выход =================
+
+/// Залитый кружок 32px для иконки трея (цвет = статус обхода).
+fn tray_dot(rgb: (u8, u8, u8)) -> tauri::image::Image<'static> {
+    const S: u32 = 32;
+    let mut px = Vec::with_capacity((S * S * 4) as usize);
+    for y in 0..S {
+        for x in 0..S {
+            let dx = x as f32 - (S as f32 - 1.0) / 2.0;
+            let dy = y as f32 - (S as f32 - 1.0) / 2.0;
+            let d = (dx * dx + dy * dy).sqrt();
+            let (r, g, b, a) = if d <= 11.0 {
+                (rgb.0, rgb.1, rgb.2, 255)
+            } else if d <= 13.5 {
+                (rgb.0, rgb.1, rgb.2, 110)
+            } else {
+                (0, 0, 0, 0)
+            };
+            px.extend_from_slice(&[r, g, b, a]);
+        }
+    }
+    tauri::image::Image::new_owned(px, S, S)
+}
+
+fn tray_status() -> (String, (u8, u8, u8)) {
+    let st = zapret::service_status();
+    if st.zapret == "RUNNING" || st.winws {
+        ("ОБХОД ВКЛ".into(), (53, 208, 127))
+    } else if st.zapret == "STOPPED" {
+        ("STOPPED".into(), (245, 165, 36))
+    } else {
+        ("ВЫКЛ".into(), (255, 46, 46))
+    }
+}
+
+/// Применение конфига из трея (как ручное: служба + сброс плана watchdog).
+fn apply_service_bat(app: &tauri::AppHandle<tauri::Wry>, bat: &str) -> CmdResult {
+    let mut cfg = config::load();
+    let (ok, msg) = zapret::install_service(&cfg.zapret_root, bat);
+    if ok {
+        cfg.active_config = bat.to_string();
+        config::save(&cfg);
+        if let Some(ms) = app.try_state::<MonitorState>() {
+            *ms.wd_primary.lock().unwrap() = String::new();
+            *ms.wd_fallback.lock().unwrap() = String::new();
+            *ms.wd_due_unix.lock().unwrap() = 0;
+        }
+        log_action(&format!("Применён конфиг из трея {bat}: {msg}"), "apply");
+        log_switch(&format!("трей → {bat}"));
+        let _ = app.emit(
+            "toast",
+            ToastEvent { title: "Конфиг".into(), text: format!("{bat}: {msg}"), kind: "good".into() },
+        );
+    } else {
+        log_action(&format!("Ошибка установки {bat} из трея: {msg}"), "error");
+        let _ = app.emit(
+            "toast",
+            ToastEvent { title: "Конфиг".into(), text: format!("{bat}: {msg}"), kind: "bad".into() },
+        );
+    }
+    let _ = app.emit("status-refresh", ());
+    rebuild_tray(app);
+    CmdResult { ok, msg: format!("{bat}: {msg}") }
+}
+
+fn tray_menu_text(name: &str) -> String {
+    zapret::display_bat(name).replace('&', "&&")
+}
+
+/// Пересобрать меню трея: статус + избранное/топ конфигов + открыть/выход.
+pub(crate) fn rebuild_tray(app: &tauri::AppHandle<tauri::Wry>) {
+    use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem};
+    let cfg = config::load();
+    let (status_txt, color) = tray_status();
+    let active = if cfg.active_config.is_empty() {
+        zapret::service_status().strategy
+    } else {
+        cfg.active_config.clone()
+    };
+    let tip = if active.is_empty() {
+        format!("Zapret Manager — {status_txt}")
+    } else {
+        format!("Zapret Manager — {} ({status_txt})", zapret::display_bat(&active))
+    };
+    // избранное сверху, дальше топ по очкам, максимум 12 пунктов
+    let mut names: Vec<String> = cfg.fav_configs.clone();
+    let mut by_score: Vec<(String, i64)> =
+        cfg.best_scores.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    by_score.sort_by_key(|(_, s)| -*s);
+    for (n, _) in by_score {
+        if names.len() >= 12 {
+            break;
+        }
+        if !names.contains(&n) {
+            names.push(n);
+        }
+    }
+    let menu = (|| -> tauri::Result<Menu<tauri::Wry>> {
+        let status =
+            MenuItem::with_id(app, "st", &format!("Статус: {status_txt}"), false, None::<&str>)?;
+        let sep1 = PredefinedMenuItem::separator(app)?;
+        let open = MenuItem::with_id(app, "open", "Открыть менеджер", true, None::<&str>)?;
+        let quit = MenuItem::with_id(app, "quit", "Выход", true, None::<&str>)?;
+        let mut checks = Vec::new();
+        for n in &names {
+            checks.push(CheckMenuItem::with_id(
+                app,
+                format!("cfg::{n}"),
+                tray_menu_text(n),
+                true,
+                n == &active,
+                None::<&str>,
+            )?);
+        }
+        let sep2 = PredefinedMenuItem::separator(app)?;
+        let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![&status, &sep1];
+        for c in &checks {
+            items.push(c);
+        }
+        if !names.is_empty() {
+            items.push(&sep2);
+        }
+        items.push(&open);
+        items.push(&quit);
+        Menu::with_items(app, &items)
+    })();
+    let Ok(menu) = menu else { return };
+    let Some(tray) = app.tray_by_id("main") else { return };
+    let _ = tray.set_menu(Some(menu));
+    let _ = tray.set_tooltip(Some(tip.as_str()));
+    let _ = tray.set_icon(Some(tray_dot(color)));
+}
+
 fn main() {
     // AppUserModelID первым делом — как в Python main() (иконка таскбара + тосты)
     #[cfg(windows)]
@@ -1392,6 +1526,67 @@ fn main() {
             wd_due_unix: Mutex::new(0),
         })
         .manage(ReinstallState { running: AtomicBool::new(false) })
+        .setup(|app| {
+            let icon = app
+                .default_window_icon()
+                .cloned()
+                .unwrap_or_else(|| tray_dot((255, 46, 46)));
+            let built = tauri::tray::TrayIconBuilder::with_id("main")
+                .icon(icon)
+                .tooltip("Zapret Manager")
+                .on_menu_event(|app, event| {
+                    let id = event.id.as_ref().to_string();
+                    if id == "quit" {
+                        app.exit(0);
+                    } else if id == "open" {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.unminimize();
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    } else if let Some(bat) = id.strip_prefix("cfg::") {
+                        let app_c = app.clone();
+                        let bat = bat.to_string();
+                        // установка службы долгая — не вешаем главный поток
+                        std::thread::spawn(move || {
+                            apply_service_bat(&app_c, &bat);
+                        });
+                    }
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(w) = app.get_webview_window("main") {
+                            let visible = w.is_visible().unwrap_or(true);
+                            let focused = w.is_focused().unwrap_or(false);
+                            if visible && focused {
+                                let _ = w.hide();
+                            } else {
+                                let _ = w.unminimize();
+                                let _ = w.show();
+                                let _ = w.set_focus();
+                            }
+                        }
+                    }
+                })
+                .build(app);
+            if let Err(e) = built {
+                log_action(&format!("Трей не создался: {e}"), "error");
+            } else {
+                rebuild_tray(app.handle());
+                let app_c = app.handle().clone();
+                // фоновая свежесть иконки/меню раз в минуту
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_secs(60));
+                    rebuild_tray(&app_c);
+                });
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_version,
             get_config,

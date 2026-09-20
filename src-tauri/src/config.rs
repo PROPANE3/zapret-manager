@@ -31,6 +31,7 @@ pub struct AppConfig {
     pub game_procs: String,
     pub watchdog_return_min: u64,
     pub custom_theme: std::collections::HashMap<String, String>,
+    pub autoupdate_check: bool,
 }
 
 impl Default for AppConfig {
@@ -61,6 +62,7 @@ impl Default for AppConfig {
             game_procs: "cs2.exe, dota2.exe, GTA5.exe, eldenring.exe".into(),
             watchdog_return_min: 15,
             custom_theme: HashMap::new(),
+            autoupdate_check: true,
         }
     }
 }
