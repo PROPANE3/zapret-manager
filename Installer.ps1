@@ -273,6 +273,19 @@ function Get-ZapretRelease {
     if (!$asset) { throw "в релизе нет zip-архива" }
     return @{ Tag = $tag; Url = [string]$asset.browser_download_url }
 }
+function Get-AppRelease {
+    # свежий setup.exe менеджера с GitHub (когда локально собирать не из чего)
+    $wr = New-Object Net.WebClient
+    $wr.Headers.Add("User-Agent", "ZapretManager-Installer")
+    $wr.Headers.Add("Accept", "application/vnd.github+json")
+    try {
+        $json = $wr.DownloadString("https://api.github.com/repos/PROPANE3/zapret-manager/releases/latest")
+    } finally { $wr.Dispose() }
+    $rel = $json | ConvertFrom-Json
+    $asset = $rel.assets | Where-Object { $_.name -like "*-setup.exe" } | Select-Object -First 1
+    if (!$asset) { throw "в релизе на GitHub нет setup.exe (раздел Releases пуст)" }
+    return @{ Tag = [string]$rel.tag_name; Url = [string]$asset.browser_download_url; Name = [string]$asset.name }
+}
 
 function Install-All {
     $InstallBtn.IsEnabled = $false
@@ -310,12 +323,20 @@ function Install-All {
         # [2/6] программа
         Set-Status "[2/6] Программа..."; Set-Prog 25
         $m = Find-ManagerExe
-        if (!$m) { throw "нет zapret-manager.exe: соберите проект или положите рядом setup.exe" }
-        if ($m.Kind -eq "nsis-bundle") {
+        if (!$m) {
+            Add-Log "Готового exe нет — качаю установщик с GitHub..."
+            Set-Status "[2/6] Программа: качаю свежий релиз с GitHub..."
+            $arel = Get-AppRelease
+            $asetup = Join-Path $env:TEMP $arel.Name
+            Get-File $arel.Url $asetup ("Качаю " + $arel.Name)
+            $m = @{ Path = $asetup; Kind = "dl-setup" }
+        }
+        if ($m.Kind -eq "nsis-bundle" -or $m.Kind -eq "dl-setup") {
             Add-Log "Ставлю из NSIS-пакета (тихо)..."
             $p = Start-Process -FilePath $m.Path -ArgumentList "/S" -Wait -PassThru
             $script:installedExe = Join-Path $NsisDir $ExeName
-            if (!(Test-Path -LiteralPath $script:installedExe)) { throw "NSIS-установщик заверёшился с кодом $($p.ExitCode), но exe не появился" }
+            if (!(Test-Path -LiteralPath $script:installedExe)) { throw "NSIS-установщик завершился с кодом $($p.ExitCode), но exe не появился" }
+            if ($m.Kind -eq "dl-setup") { Remove-Item -LiteralPath $m.Path -Force -ErrorAction SilentlyContinue }
         } elseif ($m.Kind -eq "dev-build") {
             Stop-App
             New-Item -ItemType Directory -Path $PortableDir -Force | Out-Null
@@ -405,6 +426,13 @@ function Install-All {
         # [6/6] готово
         Set-Prog 95
         $script:installDone = $true
+        # полный автозапуск: пользователю больше ничего запускать не нужно
+        try {
+            Start-Process -FilePath $script:installedExe
+            Add-Log "Приложение запущено автоматически."
+        } catch {
+            Add-Log ("Не запустилось само — откройте кнопкой ниже: " + $_.Exception.Message)
+        }
         try {
             if ($script:hasVideo -and $Video.NaturalDuration.HasTimeSpan -and ($Video.Position -ge $Video.NaturalDuration.TimeSpan)) {
                 $script:videoDone = $true

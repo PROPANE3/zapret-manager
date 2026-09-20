@@ -197,6 +197,14 @@ function Get-ZapretRelease {
     if (!$asset) { throw "в релизе нет zip-архива" }
     return @{ Tag = $tag; Url = [string]$asset.browser_download_url }
 }
+function Get-AppReleaseGH {
+    # свежий setup.exe менеджера с GitHub (когда локально собирать не из чего)
+    $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/PROPANE3/zapret-manager/releases/latest" `
+        -Headers @{ "User-Agent" = "ZapretManager-Setup"; "Accept" = "application/vnd.github+json" }
+    $asset = $rel.assets | Where-Object { $_.name -like "*-setup.exe" } | Select-Object -First 1
+    if (!$asset) { throw "в релизе на GitHub нет setup.exe (раздел Releases пуст)" }
+    return @{ Tag = [string]$rel.tag_name; Url = [string]$asset.browser_download_url; Name = [string]$asset.name }
+}
 
 # ================= удаление =================
 if ($Uninstall) {
@@ -228,7 +236,7 @@ if ($CheckOnly) {
         if (($m.Kind -eq "dev-build") -and (Test-FrontendNewer $m.Path)) {
             Write-Warn "frontend новее exe — совет: tools\Setup.ps1 -Rebuild"
         }
-    } else { Write-Warn "Приложение: exe не найден (нужна сборка или релиз)" }
+    } else { Write-Warn "Приложение: exe не найден (скачается с GitHub при установке)" }
     $z = Find-Zapret
     if ($z) { Write-Ok "zapret: $z" } else { Write-Warn "zapret: не найден (установщик скачает свежий релиз)" }
     $vid = Join-Path $root "assets\wizard\install_wizards.mp4"
@@ -288,15 +296,19 @@ if ($Rebuild) {
 }
 $m = Find-ManagerExe
 if (!$m) {
-    Write-Err "Не нашёл zapret-manager.exe: нет ни сборки (src-tauri\target\release), ни NSIS-пакета, ни установленной копии."
-    Write-Err "Соберите проект (tools\Setup.ps1 -Rebuild) или положите рядом готовый setup.exe."
-    exit 1
+    Write-Inf "Готового exe нет — качаю установщик с GitHub..."
+    $arel = Get-AppReleaseGH
+    $asetup = Join-Path $env:TEMP $arel.Name
+    Write-Inf ("Качаю " + $arel.Name + " ...")
+    Invoke-WebRequest -Uri $arel.Url -OutFile $asetup -UseBasicParsing
+    $m = @{ Path = $asetup; Kind = "dl-setup" }
 }
-if ($m.Kind -eq "nsis-bundle") {
+if ($m.Kind -eq "nsis-bundle" -or $m.Kind -eq "dl-setup") {
     Write-Inf "Ставлю из NSIS-пакета (тихо): $(Split-Path -Leaf $m.Path)"
     $p = Start-Process -FilePath $m.Path -ArgumentList "/S" -Wait -PassThru
     $installed = Join-Path $nsisDir $exeName
     if (!(Test-Path -LiteralPath $installed)) { Write-Err "NSIS завершился с кодом $($p.ExitCode), но exe не появился."; exit 1 }
+    if ($m.Kind -eq "dl-setup") { Remove-Item -LiteralPath $m.Path -Force -ErrorAction SilentlyContinue }
     Write-Ok "Поставлено: $installed"
 } elseif ($m.Kind -eq "dev-build") {
     if (Test-FrontendNewer $m.Path) {
