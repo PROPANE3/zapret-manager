@@ -463,6 +463,97 @@ $("btn-diag").addEventListener("click", async () => {
     ["OK", "accent", closeModal],
   ]);
 });
+/* ---------- мастер «Не работает»: проверка + кнопки починки ---------- */
+async function openFixit() {
+  openModal("Не работает? Чиним по шагам",
+    `<div id="fixit-list"><div class="muted">Проверяю…</div></div>`,
+    [["Закрыть", "ghost", () => closeModal()]]);
+  const box = $("fixit-list");
+  if (!box) return;
+  const rows = [];
+  const paint = () => {
+    box.innerHTML = "";
+    for (const r of rows) {
+      const d = document.createElement("div");
+      d.className = "diag-row";
+      const dot = document.createElement("b");
+      dot.textContent = r.ok == null ? "…" : (r.ok ? "✓" : "!");
+      dot.style.color = r.ok == null ? "var(--muted)" : (r.ok ? "var(--green)" : "var(--red)");
+      const lab = document.createElement("span");
+      lab.style.flex = "1";
+      lab.textContent = r.label;
+      d.appendChild(dot); d.appendChild(lab);
+      if (r.fix) {
+        const b = document.createElement("button");
+        b.className = "btn ghost"; b.textContent = r.fix;
+        b.addEventListener("click", r.fn);
+        d.appendChild(b);
+      }
+      box.appendChild(d);
+    }
+  };
+  const step = async (label, fn) => {
+    rows.push({ label, ok: null });
+    paint();
+    try {
+      const r = await fn();
+      rows[rows.length - 1] = { label: r.label || label, ok: r.ok, fix: r.fix, fn: r.fn };
+    } catch (e) {
+      rows[rows.length - 1] = { label, ok: false };
+    }
+    paint();
+  };
+  const goSettings = (hint) => () => {
+    closeModal(); showPage("settings");
+    if (hint) toast("Настройки", hint, "");
+  };
+  await step("Папка zapret и конфиги", async () => {
+    const cfgs = await api("list_configs").catch(() => []);
+    if (cfgs.length) return { ok: true, label: `Конфиги на месте (${cfgs.length})` };
+    return { ok: false, label: "Конфиги не найдены", fix: "Открыть настройки", fn: goSettings("Укажи корневую папку zapret") };
+  });
+  await step("Служба zapret", async () => {
+    const st = await api("get_service_status").catch(() => null);
+    if (!st) return { ok: false };
+    if (st.zapret === "RUNNING") return { ok: true, label: "Служба RUNNING" };
+    const act = (S.cfg && S.cfg.active_config) || "";
+    if (!act) return { ok: false, label: `Служба: ${st.zapret}, нет активного конфига`, fix: "Выбрать", fn: goSettings("Выбери и примени конфиг на вкладке Проверка") };
+    if (st.zapret === "STOPPED") return { ok: false, label: "Служба STOPPED", fix: "Запустить", fn: async () => { const r = await api("restart_service_cmd"); toast("Служба", r.msg, r.ok ? "good" : "bad"); } };
+    return { ok: false, label: "Служба не установлена", fix: "Установить", fn: async () => { await applyBat(act); } };
+  });
+  await step("Драйвер WinDivert", async () => {
+    const st = await api("get_service_status").catch(() => null);
+    const w = st ? st.windivert : "";
+    if (w === "RUNNING" || w === "STOPPED") return { ok: true, label: `WinDivert: ${w}` };
+    return { ok: false, label: "WinDivert не найден", fix: "Переустановить zapret", fn: goSettings("Нажми «Переустановить Zapret»") };
+  });
+  await step("Сеть и система", async () => {
+    const drows = await api("run_diagnostics").catch(() => []);
+    const proxy = (drows || []).find((r) => /proxy/i.test(r.name || ""));
+    if (proxy && proxy.kind !== "good") {
+      return { ok: false, label: `Прокси: ${proxy.status}`, fix: "Открыть прокси", fn: () => api("open_url", { url: "ms-settings:network-proxy" }) };
+    }
+    return { ok: true, label: "Прокси в порядке" };
+  });
+  try {
+    const v = await api("vpn_state").catch(() => null);
+    if (v && v.active) {
+      rows.push({ label: `VPN включён (${(v.names || []).join(", ").slice(0, 50)}) — выключи вручную`, ok: false });
+      paint();
+    }
+  } catch (_) {}
+  await step("Связь сейчас", async () => {
+    const pts = await api("ping_status").catch(() => []);
+    if (!pts || !pts.length) return { ok: false };
+    const bad = pts.filter((p) => p.ping_ms == null);
+    if (!bad.length) return { ok: true, label: "Пинги идут" };
+    const act = (S.cfg && S.cfg.active_config) || "";
+    if (!act) return { ok: false, label: "Пингов нет" };
+    return { ok: false, label: "Пингов нет", fix: "Проверить активный", fn: async () => { closeModal(); startCheck([act]); } };
+  });
+}
+$("btn-fixit").addEventListener("click", openFixit);
+
 /* ---------- секреты, funny, спамтон, стратегии ---------- */
 const imgCache = {};
 async function imgUrl(cmd, args) {
@@ -1076,6 +1167,7 @@ async function loadSettings() {
   renderSeg();
   paintBuddy();
   $("set-autostart").checked = await api("autostart_status").catch(() => false);
+  $("set-autoupdate").checked = !!S.cfg.autoupdate_check;
 }
 $("btn-autodetect").addEventListener("click", async () => {
   const r = await api("autodetect_root");
@@ -1122,6 +1214,11 @@ $("set-autostart").addEventListener("change", async (e) => {
   const r = await api("set_autostart", { enable: e.target.checked });
   if (!r.ok) { toast("Автозагрузка", r.msg, "bad"); e.target.checked = !e.target.checked; }
   else if (r.msg) toast("Автозагрузка", r.msg, "good");
+});
+$("set-autoupdate").addEventListener("change", async (e) => {
+  S.cfg.autoupdate_check = e.target.checked;
+  await api("save_config", { cfg: S.cfg });
+  toast("Обновления", e.target.checked ? "Автопроверка включена" : "Автопроверка выключена", "good");
 });
 
 /* ---------- события из Rust ---------- */
@@ -1193,6 +1290,31 @@ $("btn-export").addEventListener("click", async () => {
     api("open_data_folder");
   } catch (_) {}
 });
+function showUpdateButton(upd) {
+  if (!upd) return false;
+  const b = document.createElement("button");
+  b.className = "btn accent"; b.textContent = `↓ Менеджер v${upd.version} — установить`;
+  b.title = (upd.body || "").slice(0, 300);
+  b.addEventListener("click", async () => {
+    if (!confirm(`Установить v${upd.version}? Приложение перезапустится.`)) return;
+    toast("Обновление", "Скачиваю и ставлю…", "");
+    try { await api("app_update_install"); }
+    catch (e) { toast("Обновление", "Не удалось", "bad"); }
+  });
+  $("update-info").appendChild(b);
+  return true;
+}
+async function autoUpdateCheck() {
+  if (!hasBackend()) return;
+  try {
+    const upd = await api("app_update_check");
+    if (upd && upd.version) {
+      toast("Обновление", `Доступна версия ${upd.version} — кнопка в Настройки → Приложение.`, "good");
+      const el = $("update-info");
+      if (el) { el.innerHTML = ""; showUpdateButton(upd); }
+    }
+  } catch (_) {}
+}
 $("btn-updates").addEventListener("click", async () => {
   $("update-info").textContent = "Проверяю…";
   $("update-info").innerHTML = "";
@@ -1209,16 +1331,7 @@ $("btn-updates").addEventListener("click", async () => {
   try {
     const upd = await api("app_update_check");
     if (upd) {
-      const b = document.createElement("button");
-      b.className = "btn accent"; b.textContent = `↓ Менеджер v${upd.version} — установить`;
-      b.title = upd.body.slice(0, 300);
-      b.addEventListener("click", async () => {
-        if (!confirm(`Установить v${upd.version}? Приложение перезапустится.`)) return;
-        toast("Обновление", "Скачиваю и ставлю…", "");
-        try { await api("app_update_install"); }
-        catch (e) { toast("Обновление", "Не удалось", "bad"); }
-      });
-      $("update-info").appendChild(b);
+      showUpdateButton(upd);
     } else if (!$("update-info").children.length) {
       $("update-info").textContent = "Всё свежее.";
     }
@@ -1662,6 +1775,7 @@ async function boot() {
   await bootSecrets();
   const wiz = await maybeWizard();
   if (!wiz) setTimeout(startTour, 2500);
+  setTimeout(autoUpdateCheck, 45000);
   await api("monitor_start").catch(() => {});
   const listen = tauriListen();
   if (!listen) return;

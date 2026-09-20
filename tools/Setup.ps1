@@ -34,7 +34,8 @@ param(
     [switch]$Rebuild,
     [switch]$NoVideo,
     [switch]$Silent,
-    [string]$ZapretRoot = ""
+    [string]$ZapretRoot = "",
+    [string]$PortableDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -323,6 +324,21 @@ if ($m.Kind -eq "nsis-bundle" -or $m.Kind -eq "dl-setup") {
 } else {
     $installed = $m.Path
     Write-Ok "Уже стоит, использую: $installed"
+}
+# Portable: всё рядом с exe в указанной папке (мимо %LOCALAPPDATA%)
+if ($PortableDir) {
+    Write-Inf "Portable: собираю в $PortableDir ..."
+    Stop-App
+    New-Item -ItemType Directory -Path $PortableDir -Force | Out-Null
+    Copy-Item -LiteralPath $installed -Destination (Join-Path $PortableDir $exeName) -Force
+    $oldData = Join-Path (Split-Path -Parent $installed) "data"
+    $newData = Join-Path $PortableDir "data"
+    if ((Test-Path -LiteralPath $oldData) -and !(Test-Path -LiteralPath $newData)) {
+        Copy-Item -LiteralPath $oldData -Destination $newData -Recurse -Force
+        Write-Ok "Данные перенесены"
+    }
+    $installed = Join-Path $PortableDir $exeName
+    Write-Ok "Portable готов: $installed"
 }
 # Ассеты рядом с exe: funny, секретные архивы, музыка, видео мастера
 $srcAssets = Join-Path $root "assets"

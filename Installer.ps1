@@ -347,6 +347,21 @@ function Install-All {
             Add-Log ("Уже стоит: " + $script:installedExe)
         }
         Add-Log ("Программа: " + $script:installedExe)
+        # Portable: всё рядом с exe в папке на рабочем столе
+        if ($PortableBox.IsChecked) {
+            $portTarget = Join-Path $DeskDir "ZapretManager-Portable"
+            Stop-App
+            Add-Log ("Portable: собираю в " + $portTarget + " ...");
+            New-Item -ItemType Directory -Path $portTarget -Force | Out-Null
+            Copy-Item -LiteralPath $script:installedExe -Destination (Join-Path $portTarget $ExeName) -Force
+            $oldData = Join-Path (Split-Path -Parent $script:installedExe) "data"
+            $newData = Join-Path $portTarget "data"
+            if ((Test-Path -LiteralPath $oldData) -and !(Test-Path -LiteralPath $newData)) {
+                Copy-Item -LiteralPath $oldData -Destination $newData -Recurse -Force
+            }
+            $script:installedExe = Join-Path $portTarget $ExeName
+            Add-Log "Portable готов."
+        }
         # ассеты рядом с exe: funny, секретные архивы, музыка, видео мастера
         $srcAssets = Join-Path $Root "assets"
         if (Test-Path -LiteralPath $srcAssets) {
