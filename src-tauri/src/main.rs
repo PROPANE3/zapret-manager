@@ -201,6 +201,17 @@ fn autodetect_root() -> Option<String> {
 }
 
 #[tauri::command]
+async fn pick_folder(app: tauri::AppHandle) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    let folder = app
+        .dialog()
+        .file()
+        .add_filter("Config files", &["bat", "txt"])
+        .blocking_pick_folder();
+    folder.map(|p| p.to_string())
+}
+
+#[tauri::command]
 fn list_configs() -> Vec<ConfigEntry> {
     let cfg = config::load();
     let favs = cfg.fav_configs.clone();
@@ -358,7 +369,7 @@ fn resource_state() -> zapret::ResourceStat {
 fn export_report() -> Result<CmdResult, String> {
     let cfg = config::load();
     let mut l: Vec<String> = vec![
-        "# Отчёт Zapret Manager v2.0.0".into(),
+        "# Отчёт Zapret Manager v2.0.2".into(),
         String::new(),
         format!("Время: {}", ts_now()),
         format!("Корень zapret: `{}`", cfg.zapret_root),
@@ -1518,6 +1529,7 @@ fn main() {
         }))
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .manage(CheckState { cancel: Arc::new(AtomicBool::new(false)), running: AtomicBool::new(false) })
         .manage(MonitorState {
             handle: Mutex::new(None),
@@ -1592,6 +1604,7 @@ fn main() {
             get_config,
             save_config,
             autodetect_root,
+            pick_folder,
             list_configs,
             get_service_status,
             apply_config,

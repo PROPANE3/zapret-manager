@@ -88,7 +88,23 @@ fn config_path() -> PathBuf {
 }
 
 fn is_zapret_root(p: &std::path::Path) -> bool {
-    p.is_dir() && p.join("service.bat").is_file() && p.join("bin").is_dir()
+    if !p.is_dir() {
+        return false;
+    }
+    // Обязательное условие: есть папка bin/ (с winws.exe)
+    let has_bin = p.join("bin").is_dir();
+    if !has_bin {
+        return false;
+    }
+    // Достаточно наличия хотя бы одного из признаков:
+    // - service.bat в корне (старая структура)
+    // - pre-configs/ (новая структура с конфигами)
+    // - lists/ (списки доменов)
+    let has_service = p.join("service.bat").is_file();
+    let has_pre_configs = p.join("pre-configs").is_dir();
+    let has_lists = p.join("lists").is_dir();
+    
+    has_service || has_pre_configs || has_lists
 }
 
 fn default_root_candidates() -> Vec<String> {
@@ -107,11 +123,31 @@ fn default_root_candidates() -> Vec<String> {
                     }
                 }
             }
+            // родительская папка (если менеджер в подпапке)
+            if let Some(parent) = dir.parent() {
+                if is_zapret_root(parent) {
+                    let s = parent.to_string_lossy().into_owned();
+                    if !out.contains(&s) {
+                        out.push(s);
+                    }
+                }
+                if let Ok(rd) = std::fs::read_dir(parent) {
+                    for e in rd.flatten() {
+                        let p = e.path();
+                        if p.is_dir() && is_zapret_root(&p) {
+                            let s = p.to_string_lossy().into_owned();
+                            if !out.contains(&s) {
+                                out.push(s);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
     // 2. рабочий стол: любая zapret-discord-youtube-*, сначала свежие
     if let Ok(home) = std::env::var("USERPROFILE") {
-        let desk = PathBuf::from(home).join("Desktop");
+        let desk = PathBuf::from(&home).join("Desktop");
         if let Ok(rd) = std::fs::read_dir(&desk) {
             let mut v: Vec<(std::time::SystemTime, PathBuf)> = rd
                 .flatten()
@@ -145,11 +181,41 @@ fn default_root_candidates() -> Vec<String> {
                 }
             }
         }
+        // Загрузки
+        let downloads = PathBuf::from(&home).join("Downloads");
+        if let Ok(rd) = std::fs::read_dir(&downloads) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() && is_zapret_root(&p) {
+                    let s = p.to_string_lossy().into_owned();
+                    if !out.contains(&s) {
+                        out.push(s);
+                    }
+                }
+            }
+        }
     }
     // 3. корни дисков (старый фолбэк)
-    for fixed in [r"C:\zapret", r"D:\zapret"] {
+    for fixed in [r"C:\zapret", r"D:\zapret", r"E:\zapret"] {
         if is_zapret_root(std::path::Path::new(fixed)) {
-            out.push(fixed.to_string());
+            let s = fixed.to_string();
+            if !out.contains(&s) {
+                out.push(s);
+            }
+        }
+    }
+    // 4. типичные пути установки
+    for fixed in [
+        r"C:\Program Files\zapret",
+        r"C:\Program Files (x86)\zapret",
+        r"C:\Games\zapret",
+        r"D:\Games\zapret",
+    ] {
+        if is_zapret_root(std::path::Path::new(fixed)) {
+            let s = fixed.to_string();
+            if !out.contains(&s) {
+                out.push(s);
+            }
         }
     }
     out

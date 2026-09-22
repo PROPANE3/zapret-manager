@@ -98,6 +98,86 @@ function closeModal() {
 }
 $("modal-wrap")?.addEventListener("click", (e) => { if (e.target.id === "modal-wrap") closeModal(); });
 
+/* ---------- терминал: эффект печати ---------- */
+const TERM = { queue: null, speed: 18, listTimers: [] };
+function typeWrite(el, text, speed) {
+  if (!el || !text) return Promise.resolve();
+  const s = speed || TERM.speed;
+  return new Promise((resolve) => {
+    if (TERM.queue) { try { TERM.queue.cancel = true; } catch (_) {} }
+    const state = { cancel: false };
+    TERM.queue = state;
+    el.textContent = "";
+    let i = 0;
+    const tick = () => {
+      if (state.cancel || i >= text.length) {
+        el.textContent = text;
+        if (!state.cancel) resolve();
+        return;
+      }
+      el.textContent += text[i];
+      i++;
+      setTimeout(tick, s);
+    };
+    tick();
+  });
+}
+function termTheme() { return document.documentElement.dataset.theme === "terminal"; }
+/* Печать заголовка страницы */
+async function termTypePageHead(name) {
+  if (!termTheme()) return;
+  const t = $("page-title"), s = $("page-sub");
+  const full = TITLES[name];
+  if (!full) return;
+  await typeWrite(t, full[0], 22);
+  if (s) await typeWrite(s, full[1], 12);
+}
+/* Печать в лог проверки */
+async function termTypeLog(el, text) {
+  if (!termTheme()) { el.textContent = text; return; }
+  await typeWrite(el, text, 6);
+}
+/* Эффект "бегущей строки" для элементов списка */
+function termTypedList(container, selector, delay) {
+  if (!termTheme()) return;
+  // Очистить предыдущие таймеры
+  TERM.listTimers.forEach(t => clearTimeout(t));
+  TERM.listTimers = [];
+  const items = container.querySelectorAll(selector);
+  items.forEach((item, i) => {
+    item.style.opacity = "0";
+    item.style.transform = "translateX(-10px)";
+    const timer = setTimeout(() => {
+      item.style.transition = "opacity 0.15s, transform 0.15s";
+      item.style.opacity = "1";
+      item.style.transform = "translateX(0)";
+    }, i * (delay || 40));
+    TERM.listTimers.push(timer);
+  });
+}
+/* Печать текста внутри элементов */
+function termTypeListText(container, selector, speed) {
+  if (!termTheme()) return;
+  const items = container.querySelectorAll(selector);
+  items.forEach((item, i) => {
+    const text = item.textContent;
+    item.textContent = "";
+    item.dataset.termText = text;
+    const timer = setTimeout(() => {
+      let j = 0;
+      const tick = () => {
+        if (j < text.length) {
+          item.textContent += text[j];
+          j++;
+          setTimeout(tick, speed || 15);
+        }
+      };
+      tick();
+    }, i * 50);
+    TERM.listTimers.push(timer);
+  });
+}
+
 /* ---------- навигация ---------- */
 const TITLES = {
   check: ["Проверка конфигов", "замер пингов Discord и YouTube по каждому конфигу"],
@@ -117,6 +197,7 @@ function showPage(name) {
   const t = $("page-title"), s = $("page-sub");
   if (t) t.textContent = TITLES[name][0];
   if (s) s.textContent = TITLES[name][1];
+  if (termTheme()) termTypePageHead(name);
   if (hasBackend()) {
     if (name === "logs" && typeof refreshLogs === "function") refreshLogs().catch(() => {});
     if (name === "journal" && typeof refreshJournal === "function") refreshJournal().catch(() => {});
@@ -165,7 +246,15 @@ async function refreshActiveBar() {
   try {
   const st = await api("get_service_status");
   const active = S.cfg.active_config || st.strategy || "не выбран";
-  $("active-name").textContent = active;
+  const nameEl = $("active-name");
+  if (termTheme()) {
+    if (nameEl.dataset.last !== active) {
+      nameEl.dataset.last = active;
+      typeWrite(nameEl, active, 20);
+    }
+  } else {
+    nameEl.textContent = active;
+  }
   let txt, col;
   if (st.zapret === "RUNNING") {
     txt = `Служба: RUNNING • WinDivert: ${st.windivert} • winws: ${st.winws ? "да" : "нет"}`;
@@ -274,6 +363,11 @@ async function refreshConfigs() {
     row.querySelector(".go").addEventListener("click", () => applyBat(c.name));
     box.appendChild(row);
   }
+  // Terminal эффект: элементы появляются по одному
+  if (termTheme()) {
+    termTypedList(box, ".cfg-row", 30);
+    termTypeListText(box, ".cfg-row .nm", 12);
+  }
 }
 function selectedConfigs() { return S.configs.map((c) => c.name).filter((n) => S.checked[n]); }
 
@@ -291,10 +385,16 @@ async function startCheck(bats) {
   $("check-log").textContent = "";
   $("prog-fill").style.width = "0%";
   $("prog-label").textContent = "Проверка идёт…";
+  if (termTheme()) termTypeLog($("prog-label"), "> Инициализация проверки...", 25);
   try {
     const done = await api("run_check", { bats });
     renderResults(done.results);
-    $("check-log").textContent = (done.log || []).join("\n");
+    if (termTheme() && done.log) {
+      const logText = (done.log || []).join("\n");
+      await termTypeLog($("check-log"), logText, 4);
+    } else {
+      $("check-log").textContent = (done.log || []).join("\n");
+    }
     $("prog-fill").style.width = "100%";
     $("prog-label").textContent = done.aborted ? "Проверка прервана" : "Готово";
     S.cfg = await api("get_config");
@@ -341,6 +441,10 @@ function paintGradeTable() {
     tr.addEventListener("click", () => { S.selGrade = r.name; tb.querySelectorAll("tr").forEach((x) => x.classList.remove("sel")); tr.classList.add("sel"); });
     if (!r.live) tr.querySelector(".go").addEventListener("click", (e) => { e.stopPropagation(); applyBat(r.name); });
     tb.appendChild(tr);
+  }
+  // Terminal эффект: строки таблицы появляются по одному
+  if (termTheme()) {
+    termTypedList(tb, "tr", 50);
   }
 }
 function renderResults(results) {
@@ -1077,6 +1181,11 @@ async function refreshDomains() {
     box.appendChild(row);
   }
   if (!S.domFiles.length) box.innerHTML = `<div class="muted">Папка lists/ не найдена</div>`;
+  // Terminal эффект: элементы появляются по одному
+  if (termTheme()) {
+    termTypedList(box, ".dom-row", 35);
+    termTypeListText(box, ".dom-row span[style]", 10);
+  }
 }
 async function showDomain(name) {
   try {
@@ -1144,11 +1253,23 @@ async function refreshLogs() {
     box.appendChild(row);
   }
   if (!files.length) box.innerHTML = `<div class="muted">Пока пусто — запустите проверку.</div>`;
+  // Terminal эффект: элементы появляются по одному
+  if (termTheme()) {
+    termTypedList(box, ".dom-row", 40);
+  }
 }
 $("btn-logs-refresh").addEventListener("click", refreshLogs);
 async function refreshJournal() {
   const lines = await api("read_actions", { limit: 500 });
-  $("journal-view").textContent = lines.join("\n") || "Пока пусто.";
+  const view = $("journal-view");
+  if (termTheme()) {
+    // Terminal эффект: журнал печатается построчно
+    view.textContent = "";
+    const text = lines.join("\n") || "Пока пусто.";
+    await typeWrite(view, text, 4);
+  } else {
+    view.textContent = lines.join("\n") || "Пока пусто.";
+  }
 }
 $("btn-journal-refresh").addEventListener("click", refreshJournal);
 
@@ -1173,6 +1294,19 @@ $("btn-autodetect").addEventListener("click", async () => {
   const r = await api("autodetect_root");
   if (r) $("set-root").value = r;
   else toast("Папка", "Не нашёл сам — укажите вручную", "bad");
+});
+$("btn-pick-folder").addEventListener("click", async () => {
+  const r = await api("pick_folder");
+  if (r) {
+    $("set-root").value = r;
+    // Проверяем что это действительно папка zapret
+    const cfgs = await api("list_configs").catch(() => []);
+    if (cfgs.length) {
+      toast("Папка", `Выбрана папка zapret (${cfgs.length} конфигов)`, "good");
+    } else {
+      toast("Папка", "Выбрана папка, но конфиги не найдены. Убедитесь что это корневая папка zapret (с bin/, lists/, pre-configs/)", "bad");
+    }
+  }
 });
 $("btn-save-root").addEventListener("click", async () => {
   S.cfg.zapret_root = $("set-root").value.trim();

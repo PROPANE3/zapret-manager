@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Zapret Manager v2.0.1</title>
+<title>Zapret Manager v2.0.2</title>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -28,7 +28,7 @@
       <button id="btn-game-filter" class="btn ghost small-btn" title="Game Filter: цикл Выкл→TCP+UDP→TCP→UDP"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>Game Filter: —</button>
       <button id="btn-ipset-filter" class="btn ghost small-btn" title="IPSet Filter: цикл Загружен→Минимум→Все"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>IPSet Filter: —</button>
       <div id="admin-line" class="muted small"></div>
-      <div class="muted small" id="ver-foot">v2.0.1 · Tauri</div>
+      <div class="muted small" id="ver-foot">v2.0.2 · Tauri</div>
     </div>
   </aside>
   <main id="main">
@@ -139,7 +139,7 @@
       <section class="page hidden" id="page-settings">
         <div class="card narrow">
           <div class="sect">КОРНЕВАЯ ПАПКА ZAPRET</div>
-          <div class="btn-row"><input id="set-root" class="wide"><button id="btn-autodetect" class="btn ghost"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>Найти</button><button id="btn-save-root" class="btn accent"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>Сохранить</button></div>
+          <div class="btn-row"><input id="set-root" class="wide"><button id="btn-pick-folder" class="btn ghost" title="Выбрать папку через диалог"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"/></svg>Выбрать</button><button id="btn-autodetect" class="btn ghost"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>Найти</button><button id="btn-save-root" class="btn accent"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>Сохранить</button></div>
           <div class="muted small">Папка, где лежат general*.bat, service.bat и каталоги bin/ и lists/.</div>
           <div class="btn-row" style="margin-top:8px">
             <button id="btn-reinstall" class="btn ghost"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>Переустановить Zapret</button>
@@ -202,7 +202,7 @@
             <button id="btn-updates" class="btn ghost"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>Проверить обновления</button>
             <span id="update-info" class="muted small"></span>
           </div>
-          <div class="muted small" id="ver-app">Zapret Manager v2.0.1 · Tauri + Rust · ноль рантаймов для установки</div>
+          <div class="muted small" id="ver-app">Zapret Manager v2.0.2 · Tauri + Rust · ноль рантаймов для установки</div>
         </div>
       </section>
 
