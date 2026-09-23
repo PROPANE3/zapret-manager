@@ -1,12 +1,18 @@
 [package]
 name = "zapret-manager"
-version = "2.0.2"
+version = "2.0.3"
 description = "Панель управления zapret-discord-youtube (Tauri 2)"
 edition = "2021"
 rust-version = "1.77"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+
+[features]
+# Production builds служат встроенные ассеты (без devUrl). Без этой фичи приложение
+# загружает build.devUrl (127.0.0.1:1420) и падает с ERR_CONNECTION_REFUSED.
+custom-protocol = ["tauri/custom-protocol"]
+default = ["custom-protocol"]
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }

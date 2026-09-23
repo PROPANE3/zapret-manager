@@ -211,6 +211,12 @@ async fn pick_folder(app: tauri::AppHandle) -> Option<String> {
     folder.map(|p| p.to_string())
 }
 
+/// По мнению пользователя папка zapret «успешна», если в ней есть service.bat.
+#[tauri::command]
+fn has_service_bat(path: String) -> bool {
+    std::path::Path::new(&path).join("service.bat").is_file()
+}
+
 #[tauri::command]
 fn list_configs() -> Vec<ConfigEntry> {
     let cfg = config::load();
@@ -354,8 +360,34 @@ pub struct VpnState {
 
 #[tauri::command]
 fn vpn_state() -> VpnState {
-    let (active, names) = zapret::vpn_status();
+    let mut names: Vec<String> = zapret::vpn_profiles()
+        .into_iter()
+        .filter(|p| p.connected)
+        .map(|p| p.name)
+        .collect();
+    let (_, adapters) = zapret::vpn_status();
+    for n in adapters {
+        if !names.iter().any(|x| x.eq_ignore_ascii_case(&n)) {
+            names.push(n);
+        }
+    }
+    let active = !names.is_empty();
     VpnState { active, names }
+}
+
+#[tauri::command]
+fn vpn_overview() -> zapret::VpnOverview {
+    zapret::vpn_overview()
+}
+
+#[tauri::command]
+fn vpn_toggle(name: String, connect: bool) -> Result<zapret::VpnOverview, String> {
+    let overview = zapret::vpn_toggle(&name, connect)?;
+    log_action(
+        &format!("VPN: {} «{name}»", if connect { "подключено" } else { "отключено" }),
+        "info",
+    );
+    Ok(overview)
 }
 
 #[tauri::command]
@@ -369,7 +401,7 @@ fn resource_state() -> zapret::ResourceStat {
 fn export_report() -> Result<CmdResult, String> {
     let cfg = config::load();
     let mut l: Vec<String> = vec![
-        "# Отчёт Zapret Manager v2.0.2".into(),
+        "# Отчёт Zapret Manager v2.0.3".into(),
         String::new(),
         format!("Время: {}", ts_now()),
         format!("Корень zapret: `{}`", cfg.zapret_root),
@@ -1502,6 +1534,62 @@ pub(crate) fn rebuild_tray(app: &tauri::AppHandle<tauri::Wry>) {
     let _ = tray.set_icon(Some(tray_dot(color)));
 }
 
+/// Жидкое стекло Windows: акриловое размытие рабочего стола позади прозрачного окна.
+/// (SetWindowCompositionAttribute → ACCENT_ENABLE_ACRYLICBLURBEHIND)
+#[cfg(target_os = "windows")]
+static ACRYLIC_ONCE: AtomicBool = AtomicBool::new(true);
+
+#[cfg(target_os = "windows")]
+fn apply_acrylic(hwnd: usize) {
+    use std::ffi::c_void;
+    #[repr(C)]
+    struct AccentPolicy {
+        accent_state: i32,
+        accent_flags: i32,
+        gradient_color: u32,
+        animation_id: i32,
+    }
+    #[repr(C)]
+    struct WcaData {
+        attribute: i32,
+        data: *mut c_void,
+        size: usize,
+    }
+    type FnSetWca = unsafe extern "system" fn(*mut c_void, *mut WcaData) -> i32;
+    // Динамическая загрузка: в некоторых SDK SetWindowCompositionAttribute нет в user32.lib
+    extern "system" {
+        fn GetModuleHandleA(lp_module_name: *const u8) -> *mut c_void;
+        fn GetProcAddress(h_module: *mut c_void, lp_proc_name: *const u8) -> *mut c_void;
+    }
+    let found = unsafe {
+        let user32 = GetModuleHandleA(b"user32.dll\0".as_ptr());
+        if user32.is_null() {
+            None
+        } else {
+            let addr = GetProcAddress(user32, b"SetWindowCompositionAttribute\0".as_ptr());
+            if addr.is_null() {
+                None
+            } else {
+                Some(std::mem::transmute::<*mut c_void, FnSetWca>(addr))
+            }
+        }
+    };
+    let Some(f) = found else { return };
+    // ACCENT_ENABLE_ACRYLICBLURBEHIND = 3, ACCENT_FLAG_DRAW_ALL_BORDERS = 2
+    let mut accent = AccentPolicy {
+        accent_state: 3,
+        accent_flags: 2,
+        gradient_color: 0x5A14202E, // ARGB: лёгкий сине-графитовый тон (~35%)
+        animation_id: 0,
+    };
+    let mut data = WcaData {
+        attribute: 19, // WCA_ACCENT_POLICY
+        data: (&mut accent) as *mut AccentPolicy as *mut c_void,
+        size: std::mem::size_of::<AccentPolicy>(),
+    };
+    let _ = unsafe { f(hwnd as *mut c_void, &mut data) };
+}
+
 fn main() {
     // AppUserModelID первым делом — как в Python main() (иконка таскбара + тосты)
     #[cfg(windows)]
@@ -1538,7 +1626,30 @@ fn main() {
             wd_due_unix: Mutex::new(0),
         })
         .manage(ReinstallState { running: AtomicBool::new(false) })
+        .on_window_event(|window, _event| {
+            #[cfg(target_os = "windows")]
+            {
+                if window.label() == "main" && ACRYLIC_ONCE.swap(false, Ordering::SeqCst) {
+                    if let Ok(h) = window.hwnd() {
+                        apply_acrylic(h.0 as usize);
+                    }
+                }
+            }
+        })
         .setup(|app| {
+            #[cfg(target_os = "windows")]
+            {
+                // повторное применение акрила после полного показа окна
+                let app_acr = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(1600));
+                    if let Some(w) = app_acr.get_webview_window("main") {
+                        if let Ok(h) = w.hwnd() {
+                            apply_acrylic(h.0 as usize);
+                        }
+                    }
+                });
+            }
             let icon = app
                 .default_window_icon()
                 .cloned()
@@ -1605,6 +1716,7 @@ fn main() {
             save_config,
             autodetect_root,
             pick_folder,
+            has_service_bat,
             list_configs,
             get_service_status,
             apply_config,
@@ -1633,6 +1745,8 @@ fn main() {
             ipset_toggle,
             run_diagnostics,
             vpn_state,
+            vpn_overview,
+            vpn_toggle,
             resource_state,
             lists_snapshot_save,
             release_diff,

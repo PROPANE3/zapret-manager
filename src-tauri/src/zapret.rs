@@ -1173,6 +1173,94 @@ pub fn vpn_status() -> (bool, Vec<String>) {
     (active, names)
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct VpnProfile {
+    pub name: String,
+    pub server: String,
+    pub connected: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct VpnOverview {
+    pub profiles: Vec<VpnProfile>,
+    pub active_adapters: Vec<String>,
+}
+
+/// Windows-профили VPN (панель «Сеть и Интернет → VPN», они же видимы rasdial).
+pub fn vpn_profiles() -> Vec<VpnProfile> {
+    let mut out: Vec<VpnProfile> = Vec::new();
+    let (rc, text) = run_cmd(
+        &[
+            "powershell", "-NoProfile", "-NonInteractive", "-Command",
+            "try { Get-VpnConnection | ForEach-Object { $_.Name + '|' + $_.ServerAddress + '|' + $_.ConnectionStatus } } catch { }",
+        ],
+        Duration::from_secs(15),
+    );
+    if rc == 0 {
+        for line in text.lines() {
+            let mut it = line.splitn(3, '|');
+            let (Some(name), Some(server), Some(status)) = (it.next(), it.next(), it.next()) else {
+                continue;
+            };
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                continue;
+            }
+            let st = status.trim();
+            let connected = st.eq_ignore_ascii_case("Connected")
+                || st.eq_ignore_ascii_case("Connected (Dialing)");
+            out.push(VpnProfile {
+                name,
+                server: server.trim().to_string(),
+                connected,
+            });
+        }
+    }
+    out
+}
+
+fn vpn_profile_connected(name: &str) -> bool {
+    vpn_profiles()
+        .iter()
+        .any(|p| p.name.eq_ignore_ascii_case(name) && p.connected)
+}
+
+pub fn vpn_overview() -> VpnOverview {
+    let (_, adapters) = vpn_status();
+    VpnOverview {
+        profiles: vpn_profiles(),
+        active_adapters: adapters,
+    }
+}
+
+/// Подключить/отключить профиль через rasdial, затем дождаться реального статуса.
+pub fn vpn_toggle(name: &str, connect: bool) -> Result<VpnOverview, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Пустое имя VPN-подключения".into());
+    }
+    let (rc, _out) = if connect {
+        run_cmd(&["rasdial", name], Duration::from_secs(45))
+    } else {
+        run_cmd(&["rasdial", name, "/disconnect"], Duration::from_secs(20))
+    };
+    let mut ok = false;
+    for _ in 0..40 {
+        if vpn_profile_connected(name) == connect {
+            ok = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    if !ok {
+        return Err(format!(
+            "Попытка {} «{name}» не завершилась (rasdial rc={rc})",
+            if connect { "подключить" } else { "отключить" }
+        ));
+    }
+    Ok(vpn_overview())
+}
+
 // ================= ресурсы =================
 // Только реальное потребление САМОЙ программы (её процесса),
 // плюс процесс winws, если запущен. Никаких общесистемных цифр.

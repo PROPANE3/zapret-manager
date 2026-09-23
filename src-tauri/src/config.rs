@@ -32,6 +32,12 @@ pub struct AppConfig {
     pub watchdog_return_min: u64,
     pub custom_theme: std::collections::HashMap<String, String>,
     pub autoupdate_check: bool,
+    #[serde(default = "default_fog_color")]
+    pub fog_color: String,
+}
+
+fn default_fog_color() -> String {
+    "#3B82F6".into()
 }
 
 impl Default for AppConfig {
@@ -63,6 +69,7 @@ impl Default for AppConfig {
             watchdog_return_min: 15,
             custom_theme: HashMap::new(),
             autoupdate_check: true,
+            fog_color: "#3B82F6".into(),
         }
     }
 }

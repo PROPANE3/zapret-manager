@@ -5629,7 +5629,7 @@ dependencies = [
 
 [[package]]
 name = "zapret-manager"
-version = "2.0.2"
+version = "2.0.3"
 dependencies = [
  "image",
  "reqwest 0.12.28",

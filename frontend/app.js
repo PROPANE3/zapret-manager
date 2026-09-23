@@ -177,6 +177,30 @@ function termTypeListText(container, selector, speed) {
     TERM.listTimers.push(timer);
   });
 }
+/* Терминал: вся открытая вкладка «печатается» — все элементы страницы
+   (карточки, поля, кнопки, строки, блоки текста) проявляются каскадом
+   сверху вниз, как построчный вывод терминала. */
+function termRevealPage() {
+  if (!termTheme()) return;
+  TERM.revealTimers.forEach(t => clearTimeout(t));
+  TERM.revealTimers = [];
+  const page = document.querySelector(".page:not(.hidden)");
+  if (!page) return;
+  const els = page.querySelectorAll(".card, .sect, .param-row, .row, .dom-row, .cfg-row, tr, .btn-row, .seg, .pill, .chip, input, textarea, select, .logbox, .hr");
+  let i = 0;
+  els.forEach((el) => {
+    if (el.id === "spam-shop-card") return;
+    el.style.transition = "opacity .18s ease-out, transform .18s ease-out";
+    el.style.opacity = "0";
+    el.style.transform = "translateY(3px)";
+    const timer = setTimeout(() => {
+      el.style.opacity = "1";
+      el.style.transform = "translateY(0)";
+    }, i * 22);
+    i++;
+    TERM.revealTimers.push(timer);
+  });
+}
 
 /* ---------- навигация ---------- */
 const TITLES = {
@@ -197,7 +221,7 @@ function showPage(name) {
   const t = $("page-title"), s = $("page-sub");
   if (t) t.textContent = TITLES[name][0];
   if (s) s.textContent = TITLES[name][1];
-  if (termTheme()) termTypePageHead(name);
+  if (termTheme()) { termTypePageHead(name); termRevealPage(); }
   if (hasBackend()) {
     if (name === "logs" && typeof refreshLogs === "function") refreshLogs().catch(() => {});
     if (name === "journal" && typeof refreshJournal === "function") refreshJournal().catch(() => {});
@@ -229,6 +253,26 @@ document.querySelectorAll("#theme-row button").forEach((b) => {
   b.addEventListener("click", async () => {
     await setTheme(b.dataset.theme);
   });
+});
+/* цвет тумана: «input» — живой предпросмотр, «change» — сохранение в конфиг */
+const fogInput = $("fog-color");
+if (fogInput) {
+  fogInput.value = (S.cfg && S.cfg.fog_color) || "#3B82F6";
+  fogInput.addEventListener("input", () => { if (S.cfg) S.cfg.fog_color = fogInput.value; applyFogColor(); });
+  fogInput.addEventListener("change", async () => {
+    if (!S.cfg) return;
+    S.cfg.fog_color = fogInput.value;
+    await api("save_config", { cfg: S.cfg });
+    applyFogColor();
+    toast("Туман", "Цвет сохранён", "good");
+  });
+}
+/* параллакс тумана за курсором (обновляет CSS-переменные, лёгкие стили применяют их) */
+document.addEventListener("pointermove", (e) => {
+  const cx = window.innerWidth / 2, cy = window.innerHeight / 2;
+  const de = document.documentElement;
+  de.style.setProperty("--fog-dx", (((e.clientX - cx) / cx) * 46).toFixed(1) + "px");
+  de.style.setProperty("--fog-dy", (((e.clientY - cy) / cy) * 40).toFixed(1) + "px");
 });
 
 /* ---------- hero / статусы ---------- */
@@ -567,6 +611,48 @@ $("btn-diag").addEventListener("click", async () => {
     ["OK", "accent", closeModal],
   ]);
 });
+/* ---------- VPN: список доступных подключений + вкл/выкл ---------- */
+async function openVpnModal() {
+  const ov = await api("vpn_overview");
+  const profiles = ov && ov.profiles ? ov.profiles : [];
+  const rows = profiles.map((p) => `
+    <div class="vpn-row" data-name="${esc(p.name)}" data-connected="${p.connected ? "1" : "0"}">
+      <b>${esc(p.name)}</b>
+      <span class="muted small vpn-srv">${esc(p.server || "—")}</span>
+      <span class="vpn-state ${p.connected ? "on" : "off"}">${p.connected ? "Подключено" : "Отключено"}</span>
+      <button class="btn small-btn vpn-btn">${p.connected ? "Отключить" : "Подключить"}</button>
+    </div>`).join("");
+  const empty = `<div class="muted">Настроенных подключений Windows VPN не найдено.<br>Сторонние клиенты (WireGuard, OpenVPN и др.) управляются из своих приложений.</div>`;
+  const adapters = (ov && ov.active_adapters && ov.active_adapters.length)
+    ? `<div class="muted small" style="margin-top:10px">Активные VPN-адаптеры: ${esc(ov.active_adapters.join(", "))}</div>`
+    : "";
+  openModal("VPN",
+    `<div id="vpn-modal">${rows || empty}${adapters}</div>
+     <div class="muted small" style="margin-top:10px">Помните: одновременная работа VPN и zapret может давать ошибки соединения.</div>`,
+    [["Обновить", "ghost", () => { closeModal(); openVpnModal(); }],
+     ["Закрыть", "ghost", closeModal]]);
+  document.querySelectorAll("#vpn-modal .vpn-btn").forEach((b) => {
+    b.addEventListener("click", async () => {
+      const row = b.closest(".vpn-row");
+      if (!row) return;
+      const name = row.dataset.name;
+      const connect = row.dataset.connected !== "1";
+      b.disabled = true;
+      b.textContent = "…";
+      try {
+        await api("vpn_toggle", { name, connect });
+        toast("VPN", connect ? `«${name}» подключено` : `«${name}» отключено`, "good");
+        S.vpnCache = null;
+        refreshActiveBar();
+        closeModal();
+        openVpnModal();
+      } catch (_) {
+        closeModal();
+      }
+    });
+  });
+}
+$("btn-vpn").addEventListener("click", openVpnModal);
 /* ---------- мастер «Не работает»: проверка + кнопки починки ---------- */
 async function openFixit() {
   openModal("Не работает? Чиним по шагам",
@@ -693,9 +779,21 @@ async function setTheme(name, save = true) {
   S.cfg.theme = name;
   if (save) await api("save_config", { cfg: S.cfg });
   applyTheme(name);
+  applyFogColor();
   paintBricks(name === "spamton");
   paintTermMascot(name === "terminal");
   syncThemeOverlays();
+}
+/* Цвет тумана из конфига -> CSS-переменные для слоя #fog-layer */
+function applyFogColor() {
+  const hex = (S.cfg && S.cfg.fog_color) || "#3B82F6";
+  const m = /^#([0-9a-fA-F]{6})$/.exec(String(hex));
+  if (!m) return;
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  const de = document.documentElement;
+  de.style.setProperty("--fog-a", `rgba(${r},${g},${b},0.5)`);
+  de.style.setProperty("--fog-b", `rgba(${r},${g},${b},0.24)`);
 }
 /* Оверлеи тем: CRT для терминала, OSD+трекинг для VHS, прячем фон у маскота. */
 function syncThemeOverlays() {
@@ -706,10 +804,12 @@ function syncThemeOverlays() {
   if (crt) crt.classList.toggle("hidden", t !== "terminal");
   const osd = $("vhs-osd");
   if (osd) osd.classList.toggle("hidden", t !== "vhs");
-  const trk = $("vhs-track");
+  const trk = $("vhs-scan");
   if (trk) trk.classList.toggle("hidden", t !== "vhs");
   const grn = $("vhs-grain");
   if (grn) grn.classList.toggle("hidden", t !== "vhs");
+  const fog = $("fog-layer");
+  if (fog) fog.classList.toggle("hidden", t !== "fog");
   if (t === "terminal") {
     const g = $("gal-fun");
     if (g) g.classList.add("hidden");
@@ -1190,7 +1290,9 @@ async function refreshDomains() {
 async function showDomain(name) {
   try {
     const text = await api("read_list", { name });
-    $("dom-title").textContent = `${name} (${text.split("\n").length} строк)`;
+    const title = `${name} (${text.split("\n").length} строк)`;
+    if (termTheme()) typeWrite($("dom-title"), title, 14);
+    else $("dom-title").textContent = title;
     $("dom-text").value = text;
   } catch (e) { /* тост уже показан */ }
 }
@@ -1217,6 +1319,11 @@ async function refreshLogs() {
   const files = await api("read_checks");
   const box = $("logs-list");
   box.innerHTML = "";
+  const paintLog = (text) => {
+    const v = $("log-view");
+    if (termTheme()) { v.textContent = ""; typeWrite(v, text || "Пока пусто.", 5); }
+    else v.textContent = text;
+  };
   const mkRow = (label, fn) => {
     const row = document.createElement("div");
     row.className = "dom-row";
@@ -1231,7 +1338,7 @@ async function refreshLogs() {
   };
   mkRow("Переключения", async () => {
     const lines = await api("read_switches", { limit: 500 }).catch(() => []);
-    $("log-view").textContent = lines.join("\n") || "Пока пусто — переключений не было.";
+    paintLog(lines.join("\n") || "Пока пусто — переключений не было.");
   });
   for (const f of files) {
     const row = document.createElement("div");
@@ -1247,7 +1354,7 @@ async function refreshLogs() {
         for (const [cfg, s] of Object.entries(data.summary || {})) {
           out += `${cfg}: DS=${fmtPing(s.discord_ms)} YT=${fmtPing(s.youtube_ms)} [${s.grade}] (OK=${s.ok} ERR=${s.fail})\n`;
         }
-        $("log-view").textContent = out;
+        paintLog(out);
       } catch (_) {}
     });
     box.appendChild(row);
@@ -1287,6 +1394,7 @@ async function loadSettings() {
   $("in-workers").value = S.cfg.check_workers;
   renderSeg();
   paintBuddy();
+  $("fog-color").value = S.cfg.fog_color || "#3B82F6";
   $("set-autostart").checked = await api("autostart_status").catch(() => false);
   $("set-autoupdate").checked = !!S.cfg.autoupdate_check;
 }
@@ -1299,12 +1407,12 @@ $("btn-pick-folder").addEventListener("click", async () => {
   const r = await api("pick_folder");
   if (r) {
     $("set-root").value = r;
-    // Проверяем что это действительно папка zapret
-    const cfgs = await api("list_configs").catch(() => []);
-    if (cfgs.length) {
-      toast("Папка", `Выбрана папка zapret (${cfgs.length} конфигов)`, "good");
+    // Успех, если в выбранной папке есть service.bat (как в Installer)
+    const ok = await api("has_service_bat", { path: r }).catch(() => false);
+    if (ok) {
+      toast("Папка", "Выбрана папка zapret (найден service.bat)", "good");
     } else {
-      toast("Папка", "Выбрана папка, но конфиги не найдены. Убедитесь что это корневая папка zapret (с bin/, lists/, pre-configs/)", "bad");
+      toast("Папка", "Выбрана папка, но service.bat не найден. Убедитесь, что это корневая папка zapret (там должен лежать service.bat)", "bad");
     }
   }
 });
@@ -1896,6 +2004,7 @@ async function boot() {
   if (S.cfg.theme === "custom" && S.cfg.custom_theme && Object.keys(S.cfg.custom_theme).length) applyCustomTheme();
   else applyTheme(S.cfg.theme || "scarlet");
   syncThemeOverlays();
+  applyFogColor();
   await loadSettings();
   $("set-game").checked = !!S.cfg.game_mode;
   $("set-game-procs").value = S.cfg.game_procs || "";
