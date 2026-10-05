@@ -23,11 +23,15 @@ VIAddVersionKey "CompanyName" "PROPANE3"
 !define MUI_ABORTWARNING
 !define MUI_ICON "..\..\src-tauri\icons\icon.ico"
 !define MUI_UNICON "..\..\src-tauri\icons\icon.ico"
+!define MUI_WELCOMEFINISHPAGE_BITMAP "..\..\src-tauri\icons\wizard.bmp"
+!define MUI_WELCOMEPAGE_TITLE "Zapret Manager Portable 2.0.5"
+!define MUI_WELCOMEPAGE_TEXT "Zapret Manager — панель управления zapret для обхода DPI.$\r$\n$\r$\nПриложение полностью портативное: папку можно переносить на любой диск или флешку.$\r$\n$\r$\nНажмите Далее для распаковки."
 !define MUI_FINISHPAGE_TITLE "Установка завершена"
 !define MUI_FINISHPAGE_TEXT "Zapret Manager Portable установлен в:$\r$\n$\r$\n$INSTDIR$\r$\n$\r$\nПриложение полностью портативное: папку можно переносить на любой диск и даже на флешку."
 !define MUI_FINISHPAGE_RUN "$INSTDIR\zapret-manager.exe"
 !define MUI_FINISHPAGE_RUN_TEXT "Запустить Zapret Manager"
 
+!insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH

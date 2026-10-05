@@ -69,7 +69,7 @@
             </div>
           </div>
           <div class="hero-right">
-            <button id="btn-apply-sel" class="btn accent"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>Применить выбранный</button>
+            <button id="btn-apply-sel" class="btn accent"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>Применить лучший</button>
             <button id="btn-vpn" class="btn ghost" title="VPN: доступные подключения, включить/выключить"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-3.5 8-10V5l-8-3-8 3v7c0 6.5 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg></button>
             <button id="btn-diag" class="btn ghost" title="Диагностика: BFE, прокси, WinDivert"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></button>
             <button id="btn-fixit" class="btn ghost" title="Не работает? Пошаговая починка"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11.42 15.17L17.25 21A2.652 2.652 0 0021 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 11-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 004.486-6.336l-3.276 3.277a3.004 3.004 0 01-2.25-2.25l3.276-3.276a4.5 4.5 0 00-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.102.085"/></svg></button>
@@ -172,8 +172,6 @@
           <div class="btn-row"><label>Интервал, мин <input id="set-interval" type="number" min="1" value="3"></label><label>Таймаут HTTP, с <input id="set-timeout" type="number" min="2" max="30" value="4"></label><label>Возврат watchdog, мин <input id="set-wdreturn" type="number" min="5" value="15"></label></div>
           <label class="row"><span>Дежурный напарник <span class="muted small">(охраняется основной)</span></span><input type="checkbox" id="set-buddy" class="switch"></label>
           <div class="btn-row"><button id="btn-buddy-assign" class="btn ghost">Основной = активный</button><span id="buddy-pair" class="muted small"></span></div>
-          <label class="row"><span>Игровой режим <span class="muted small">(пауза мониторинга в игре)</span></span><input type="checkbox" id="set-game" class="switch"></label>
-          <div class="btn-row"><input id="set-game-procs" style="flex:1;min-width:200px" placeholder="cs2.exe, dota2.exe, ..."><button id="btn-save-game" class="btn ghost"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button></div>
           <button id="btn-save-mon" class="btn ghost"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>Сохранить мониторинг</button>
         </div>
         <div class="card narrow">
@@ -194,14 +192,6 @@
             <label>Размер <input id="font-scale" type="range" min="85" max="130" step="5" value="100"></label>
           </div>
           <label class="row" style="margin-top:10px"><span>Цвет тумана <span class="muted small">(тема «Туман»)</span></span><input type="color" id="fog-color" value="#3B82F6"></label>
-          <div class="sect" style="margin-top:12px">СВОЯ ТЕМА</div>
-          <div id="custom-theme-grid"></div>
-          <div class="btn-row" style="margin-top:8px">
-            <button id="btn-theme-save" class="btn accent"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>Сохранить тему</button>
-            <button id="btn-theme-export" class="btn ghost"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/></svg>Экспорт</button>
-            <button id="btn-theme-import" class="btn ghost"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>Импорт</button>
-            <button id="btn-theme-reset" class="btn ghost">↺ Сброс</button>
-          </div>
           <label class="row"><span>Funny option</span><input type="checkbox" id="set-funny" class="switch"></label>
           <div class="btn-row"><input id="secret-code" type="password" placeholder="" style="width:220px"><button id="btn-secret-ok" class="btn accent">OK</button></div>
           <div id="secret-status" class="muted small"></div>

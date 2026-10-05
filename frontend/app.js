@@ -1627,14 +1627,6 @@ setInterval(async () => {
   } catch (_) {}
 }, 15000);
 
-/* ---------- игровой режим: UI ---------- */
-$("btn-save-game").addEventListener("click", async () => {
-  S.cfg.game_procs = $("set-game-procs").value;
-  S.cfg.game_mode = $("set-game").checked;
-  await api("save_config", { cfg: S.cfg });
-  toast("Игровой режим", "Сохранено", "good");
-});
-
 /* ---------- приложение: ярлык, кэш, экспорт, обновления ---------- */
 $("btn-shortcut").addEventListener("click", async () => {
   const r = await api("make_shortcut").catch(() => null);
@@ -1707,81 +1699,6 @@ $("btn-updates").addEventListener("click", async () => {
   }
 });
 
-/* ---------- своя тема: редактор ---------- */
-const THEME_KEYS = ["BG", "TITLEBAR_BG", "SIDEBAR", "CARD", "CARD2", "BORDER", "TEXT", "MUTED", "ACCENT", "ACCENT_HOVER", "ACCENT_DEEP", "ACCENT2"];
-const THEME_CSS = { BG: "--bg", TITLEBAR_BG: "--titlebar", SIDEBAR: "--sidebar", CARD: "--card", CARD2: "--card2", BORDER: "--border", TEXT: "--text", MUTED: "--muted", ACCENT: "--accent", ACCENT_HOVER: "--accent-hover", ACCENT_DEEP: "--accent-deep", ACCENT2: "--accent2" };
-function buildThemeEditor() {
-  const g = $("custom-theme-grid");
-  g.innerHTML = "";
-  const cur = S.cfg.custom_theme || {};
-  for (const k of THEME_KEYS) {
-    const lab = document.createElement("label");
-    lab.innerHTML = `${k} <input type="color" data-k="${k}" value="${cur[k] || "#000000"}">`;
-    g.appendChild(lab);
-  }
-  g.querySelectorAll("input").forEach((inp) => {
-    inp.addEventListener("input", () => {
-      document.documentElement.style.setProperty(THEME_CSS[inp.dataset.k], inp.value);
-      document.documentElement.dataset.theme = "custom-live";
-    });
-  });
-}
-function readThemeEditor() {
-  const pal = {};
-  document.querySelectorAll("#custom-theme-grid input").forEach((inp) => { pal[inp.dataset.k] = inp.value; });
-  return pal;
-}
-function applyCustomTheme() {
-  const pal = S.cfg.custom_theme || {};
-  for (const k of THEME_KEYS) {
-    if (pal[k]) document.documentElement.style.setProperty(THEME_CSS[k], pal[k]);
-  }
-  document.documentElement.dataset.theme = "custom";
-  document.querySelectorAll("#theme-row button").forEach((b) => b.classList.remove("accent"));
-}
-$("btn-theme-save").addEventListener("click", async () => {
-  S.cfg.custom_theme = readThemeEditor();
-  S.cfg.theme = "custom";
-  await api("save_config", { cfg: S.cfg });
-  applyCustomTheme();
-  toast("Своя тема", "Сохранено", "good");
-});
-$("btn-theme-export").addEventListener("click", () => {
-  const json = JSON.stringify({ name: "custom", palette: readThemeEditor() }, null, 2);
-  openModal("Экспорт темы", `<textarea style="width:100%;min-height:200px;font-family:Consolas,monospace">${esc(json)}</textarea><div class="btn-row" style="margin-top:8px"><button class="btn accent" id="theme-copy"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Копировать</button></div>`, [["Закрыть", "ghost", () => closeModal()]]);
-  $("theme-copy").addEventListener("click", () => {
-    navigator.clipboard?.writeText(json).then(() => toast("Тема", "Скопировано", "good")).catch(() => {});
-  });
-});
-$("btn-theme-import").addEventListener("click", () => {
-  openModal("Импорт темы", `<textarea id="theme-import-text" style="width:100%;min-height:200px;font-family:Consolas,monospace" placeholder='{"palette": {...}}'></textarea>`, [
-    ["Применить", "accent", () => {
-      try {
-        const data = JSON.parse($("theme-import-text").value);
-        const pal = data.palette || data;
-        for (const k of THEME_KEYS) {
-          if (typeof pal[k] === "string" && /^#[0-9a-fA-F]{6}$/.test(pal[k])) {
-            document.documentElement.style.setProperty(THEME_CSS[k], pal[k]);
-            const inp = document.querySelector(`#custom-theme-grid input[data-k="${k}"]`);
-            if (inp) inp.value = pal[k];
-          }
-        }
-        document.documentElement.dataset.theme = "custom-live";
-        closeModal();
-        toast("Тема", "Импортировано — не забудьте Сохранить", "good");
-      } catch (_) { toast("Тема", "Неверный JSON", "bad"); }
-    }],
-    ["Отмена", "ghost", () => closeModal()],
-  ]);
-});
-$("btn-theme-reset").addEventListener("click", async () => {
-  S.cfg.custom_theme = {};
-  S.cfg.theme = "scarlet";
-  await api("save_config", { cfg: S.cfg });
-  document.documentElement.removeAttribute("style");
-  applyTheme("scarlet");
-  buildThemeEditor();
-});
 const STRAT_PRESETS = {
   "fake": "--dpi-desync=fake --dpi-desync-repeats=6",
   "multisplit": "--dpi-desync=multisplit --dpi-desync-split-seqovl=681 --dpi-desync-split-pos=1",
@@ -2107,7 +2024,6 @@ async function boot() {
     // сетевые вызовы покажут понятную ошибку вместо падения всего скрипта.
     applyFont();
     applyTheme("scarlet");
-    try { buildThemeEditor(); } catch (_) {}
     toast("Демо-режим", "Нет связи с ядром Tauri — откройте собранное приложение. Вкладки работают.", "bad");
     return;
   }
@@ -2121,14 +2037,10 @@ async function boot() {
     if (a) a.textContent = `Zapret Manager v${v} · Tauri + Rust · ноль рантаймов для установки`;
   }).catch(() => {});
   applyFont();
-  if (S.cfg.theme === "custom" && S.cfg.custom_theme && Object.keys(S.cfg.custom_theme).length) applyCustomTheme();
-  else applyTheme(S.cfg.theme || "scarlet");
+  applyTheme(S.cfg.theme || "scarlet");
   syncThemeOverlays();
   applyFogColor();
   await loadSettings();
-  $("set-game").checked = !!S.cfg.game_mode;
-  $("set-game-procs").value = S.cfg.game_procs || "";
-  buildThemeEditor();
   await refreshConfigs();
   if (!S.configs.length && hasBackend()) {
     toast("Папка zapret", "Не нашёл папку zapret рядом с приложением — укажите её в Настройках (поле «Корневая папка zapret»).", "bad");

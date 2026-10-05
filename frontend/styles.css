@@ -697,9 +697,6 @@ tr.sel td { background: var(--card2); }
 /* видео во время установки */
 .wiz-video { width: 100%; max-height: 300px; border-radius: 10px; border: 1px solid var(--border); background: #000; margin-top: 10px; }
 #tour-tip { position: fixed; z-index: 210; background: var(--card); border: 1px solid var(--accent); border-radius: 10px; padding: 12px 16px; max-width: 320px; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
-#custom-theme-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 6px; }
-#custom-theme-grid label { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
-#custom-theme-grid input[type="color"] { width: 34px; height: 24px; border: 1px solid var(--border); border-radius: 4px; background: var(--card2); padding: 0; }
 select { background: var(--card2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; }
 
 /* ---------- тема «Жидкое стекло» (iOS Liquid Glass) ---------- */
