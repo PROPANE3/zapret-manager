@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Zapret Manager v2.0.3</title>
+<title>Zapret Manager v2.0.4</title>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -20,7 +20,7 @@
       <button data-page="journal"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/><path d="M15 5l4 4"/></svg>Журнал</button>
       <button data-page="settings"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Настройки</button>
     </nav>
-    <div class="side-bottom">
+      <div class="side-bottom">
       <img id="gal-fun" class="side-gal hidden" alt="">
       <img id="gal-vsd" class="side-gal hidden" alt="">
       <img id="gal-spam" class="side-gal hidden" alt="">
@@ -28,13 +28,25 @@
       <button id="btn-game-filter" class="btn ghost small-btn" title="Game Filter: цикл Выкл→TCP+UDP→TCP→UDP"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>Game Filter: —</button>
       <button id="btn-ipset-filter" class="btn ghost small-btn" title="IPSet Filter: цикл Загружен→Минимум→Все"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>IPSet Filter: —</button>
       <div id="admin-line" class="muted small"></div>
-      <div class="muted small" id="ver-foot">v2.0.3 · Tauri</div>
+      <div class="muted small" id="ver-foot">v2.0.4 · Tauri</div>
     </div>
   </aside>
   <main id="main">
     <header id="page-head">
       <div><h1 id="page-title">Проверка конфигов</h1><div id="page-sub" class="muted">замер пингов Discord и YouTube по каждому конфигу</div></div>
-      <div id="status-pill" class="pill">статус…</div>
+      <div class="header-actions">
+        <div class="quick-actions-wrap">
+          <button id="btn-quick-actions" class="btn ghost" title="Быстрые действия"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Быстрые действия</button>
+          <div id="quick-actions-dropdown" class="quick-actions-dropdown hidden">
+            <button class="qa-btn" data-action="restart-svc" title="Перезапустить службу или активный конфиг"><svg class="qa-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>Перезапустить службу</button>
+            <button class="qa-btn" data-action="flush-dns" title="Очистить кэш DNS"><svg class="qa-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>Сбросить DNS</button>
+            <button class="qa-btn" data-action="check-active" title="Проверить активный конфиг"><svg class="qa-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>Проверить пинг</button>
+            <button class="qa-btn" data-action="open-zapret" title="Открыть папку zapret"><svg class="qa-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"/></svg>Папка zapret</button>
+            <button class="qa-btn" data-action="open-data" title="Открыть папку данных"><svg class="qa-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>Папка данных</button>
+          </div>
+        </div>
+        <div id="status-pill" class="pill">статус…</div>
+      </div>
     </header>
     <div class="hr"></div>
     <div id="content">
@@ -91,6 +103,10 @@
         <div class="cols">
           <div class="card grow1">
             <div class="sect">КОНФИГИ</div>
+            <div class="cfg-search-wrap">
+              <input type="text" id="cfg-search" class="cfg-search" placeholder="Поиск конфигов...">
+              <svg class="cfg-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+            </div>
             <div id="cfg-list"></div>
           </div>
           <div class="card grow2">
@@ -168,6 +184,7 @@
             <button data-theme="vhs" class="btn ghost">VHS</button>
             <button data-theme="glass" class="btn ghost">Стекло</button>
             <button data-theme="fog" class="btn ghost">Туман</button>
+            <button data-theme="win95" class="btn ghost">Windows 95</button>
             <button data-theme="vsd" class="btn ghost hidden" id="theme-vsd">VSD</button>
           </div>
           <div class="muted small">Тема применяется мгновенно, без перезапуска.</div>
@@ -206,7 +223,7 @@
             <button id="btn-updates" class="btn ghost"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>Проверить обновления</button>
             <span id="update-info" class="muted small"></span>
           </div>
-          <div class="muted small" id="ver-app">Zapret Manager v2.0.3 · Tauri + Rust · ноль рантаймов для установки</div>
+          <div class="muted small" id="ver-app">Zapret Manager v2.0.4 · Tauri + Rust · ноль рантаймов для установки</div>
         </div>
       </section>
 

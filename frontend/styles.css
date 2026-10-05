@@ -806,3 +806,499 @@ select { background: var(--card2); color: var(--text); border: 1px solid var(--b
 .vpn-state { font-weight: bold; }
 .vpn-state.on { color: var(--green); }
 .vpn-state.off { color: var(--muted); }
+
+/* ---------- тема «Windows 95» ---------- */
+[data-theme="win95"] {
+  --bg: #C0C0C0; --sidebar: #C0C0C0; --card: #C0C0C0; --card2: #B0B0B0;
+  --border: #808080; --text: #000000; --muted: #404040;
+  --accent: #000080; --accent-hover: #0000AA; --accent-deep: #000060; --accent2: #1084D0;
+  --green: #008000; --yellow: #808000; --red: #800000;
+}
+/* Win95: характерный серый фон */
+[data-theme="win95"] body {
+  background: var(--bg);
+  font-family: "MS Sans Serif", "Microsoft Sans Serif", Tahoma, Geneva, sans-serif;
+}
+/* Win95: 3D-эффект кнопок (выпуклые) */
+[data-theme="win95"] .btn {
+  background: var(--bg);
+  border: 2px solid;
+  border-color: #FFFFFF #808080 #808080 #FFFFFF;
+  border-radius: 0;
+  box-shadow: 1px 1px 0 #000000;
+  color: var(--text);
+  font-family: "MS Sans Serif", "Microsoft Sans Serif", Tahoma, sans-serif;
+  text-shadow: none;
+  padding: 6px 16px;
+}
+[data-theme="win95"] .btn:hover {
+  filter: none;
+  background: #D4D4D4;
+}
+[data-theme="win95"] .btn:active {
+  border-color: #808080 #FFFFFF #FFFFFF #808080;
+  box-shadow: none;
+  transform: translate(1px, 1px);
+}
+[data-theme="win95"] .btn.accent {
+  background: var(--accent);
+  color: #FFFFFF;
+  border-color: #4040FF #000060 #000060 #4040FF;
+  font-weight: bold;
+}
+[data-theme="win95"] .btn.accent:hover {
+  background: var(--accent-hover);
+  filter: none;
+}
+[data-theme="win95"] .btn.accent:active {
+  border-color: #000060 #4040FF #4040FF #000060;
+}
+[data-theme="win95"] .btn:disabled {
+  color: #808080;
+  text-shadow: 1px 1px 0 #FFFFFF;
+}
+/* Win95: карточки с 3D-эффектом (вдавленные) */
+[data-theme="win95"] .card {
+  background: var(--bg);
+  border: 2px solid;
+  border-color: #808080 #FFFFFF #FFFFFF #808080;
+  border-radius: 0;
+  box-shadow: inset 1px 1px 0 #000000;
+}
+/* Win95: сайдбар */
+[data-theme="win95"] #sidebar {
+  background: var(--sidebar);
+  border-right: 2px solid;
+  border-color: #808080 #FFFFFF #FFFFFF #808080;
+  border-image: none;
+  box-shadow: inset 1px 1px 0 #000000;
+}
+/* Win95: навигация — характерные кнопки */
+[data-theme="win95"] #nav button {
+  background: var(--bg);
+  border: 2px solid;
+  border-color: #FFFFFF #808080 #808080 #FFFFFF;
+  border-radius: 0;
+  color: var(--text);
+  font-weight: normal;
+  box-shadow: 1px 1px 0 #000000;
+  margin-bottom: 2px;
+}
+[data-theme="win95"] #nav button:hover {
+  background: #D4D4D4;
+}
+[data-theme="win95"] #nav button.active {
+  background: var(--accent);
+  color: #FFFFFF;
+  border-color: #4040FF #000060 #000060 #4040FF;
+  box-shadow: none;
+  font-weight: bold;
+}
+[data-theme="win95"] #nav button:active {
+  border-color: #808080 #FFFFFF #FFFFFF #808080;
+  box-shadow: none;
+  transform: translate(1px, 1px);
+}
+/* Win95: заголовок страницы — синий как заголовок окна */
+[data-theme="win95"] #page-head {
+  background: linear-gradient(90deg, var(--accent), var(--accent2));
+  padding: 4px 8px;
+  margin: -4px -4px 8px -4px;
+}
+[data-theme="win95"] #page-head h1 {
+  color: #FFFFFF;
+  font-weight: bold;
+  text-shadow: 1px 1px 0 #000000;
+  margin: 0;
+}
+[data-theme="win95"] #page-sub {
+  color: #E0E0E0;
+}
+/* Win95: разделитель — тонкая линия */
+[data-theme="win95"] .hr {
+  background: #808080;
+  height: 2px;
+  box-shadow: 0 1px 0 #FFFFFF;
+  margin: 8px 0;
+}
+/* Win95: текст */
+[data-theme="win95"] .muted {
+  color: var(--muted);
+}
+/* Win95: инпуты и селекты */
+[data-theme="win95"] input[type="text"],
+[data-theme="win95"] input[type="number"],
+[data-theme="win95"] input[type="password"],
+[data-theme="win95"] textarea,
+[data-theme="win95"] select {
+  background: #FFFFFF;
+  border: 2px solid;
+  border-color: #808080 #FFFFFF #FFFFFF #808080;
+  border-radius: 0;
+  box-shadow: inset 1px 1px 0 #000000;
+  color: var(--text);
+  font-family: "MS Sans Serif", "Microsoft Sans Serif", Tahoma, sans-serif;
+}
+[data-theme="win95"] input:focus,
+[data-theme="win95"] textarea:focus {
+  outline: 1px dotted var(--text);
+}
+/* Win95: чекбоксы и радиокнопки */
+[data-theme="win95"] input[type="checkbox"],
+[data-theme="win95"] input[type="radio"] {
+  accent-color: var(--accent);
+}
+/* Win95: переключатели (switch) */
+[data-theme="win95"] .switch {
+  width: 40px;
+  height: 20px;
+}
+/* Win95: таблица */
+[data-theme="win95"] table {
+  border-collapse: collapse;
+}
+[data-theme="win95"] th {
+  background: var(--bg);
+  border: 2px solid;
+  border-color: #FFFFFF #808080 #808080 #FFFFFF;
+  box-shadow: 1px 1px 0 #000000;
+  color: var(--text);
+  font-weight: bold;
+  padding: 4px 8px;
+}
+[data-theme="win95"] td {
+  background: #FFFFFF;
+  border: 1px solid #808080;
+  padding: 4px 8px;
+}
+[data-theme="win95"] tr:hover td {
+  background: #E0E0E0;
+}
+[data-theme="win95"] tr.sel td {
+  background: var(--accent);
+  color: #FFFFFF;
+}
+/* Win95: лог-бокс */
+[data-theme="win95"] .logbox {
+  background: #FFFFFF;
+  border: 2px solid;
+  border-color: #808080 #FFFFFF #FFFFFF #808080;
+  border-radius: 0;
+  box-shadow: inset 1px 1px 0 #000000;
+  color: var(--text);
+  font-family: "Courier New", Courier, monospace;
+}
+/* Win95: прогресс-бар */
+[data-theme="win95"] .progress {
+  background: #FFFFFF;
+  border: 2px solid;
+  border-color: #808080 #FFFFFF #FFFFFF #808080;
+  border-radius: 0;
+  box-shadow: inset 1px 1px 0 #000000;
+}
+[data-theme="win95"] #prog-fill,
+[data-theme="win95"] #reinstall-fill {
+  background: var(--accent);
+  border-radius: 0;
+}
+/* Win95: чипы и пилюли */
+[data-theme="win95"] .chip,
+[data-theme="win95"] .pill {
+  background: var(--bg);
+  border: 2px solid;
+  border-color: #FFFFFF #808080 #808080 #FFFFFF;
+  border-radius: 0;
+  box-shadow: 1px 1px 0 #000000;
+  color: var(--text);
+}
+/* Win95: сегментированный контрол */
+[data-theme="win95"] .seg {
+  background: var(--bg);
+  border: 2px solid;
+  border-color: #808080 #FFFFFF #FFFFFF #808080;
+  border-radius: 0;
+  box-shadow: inset 1px 1px 0 #000000;
+}
+[data-theme="win95"] .seg button {
+  background: var(--bg);
+  border: 1px solid;
+  border-color: #FFFFFF #808080 #808080 #FFFFFF;
+  color: var(--text);
+  margin: 1px;
+}
+[data-theme="win95"] .seg button:hover {
+  background: #D4D4D4;
+}
+[data-theme="win95"] .seg button.active {
+  background: var(--accent);
+  color: #FFFFFF;
+  border-color: #4040FF #000060 #000060 #4040FF;
+}
+/* Win95: тосты */
+[data-theme="win95"] .toast {
+  background: var(--bg);
+  border: 2px solid;
+  border-color: #FFFFFF #808080 #808080 #FFFFFF;
+  border-radius: 0;
+  box-shadow: 2px 2px 0 #000000;
+  color: var(--text);
+}
+[data-theme="win95"] .toast.good {
+  border-left: 4px solid var(--green);
+}
+[data-theme="win95"] .toast.bad {
+  border-left: 4px solid var(--red);
+}
+/* Win95: модалка */
+[data-theme="win95"] #modal-wrap {
+  background: rgba(0, 0, 0, 0.5);
+}
+[data-theme="win95"] #modal-card {
+  background: var(--bg);
+  border: 2px solid;
+  border-color: #FFFFFF #808080 #808080 #FFFFFF;
+  border-radius: 0;
+  box-shadow: 2px 2px 0 #000000;
+}
+[data-theme="win95"] #modal-title {
+  background: linear-gradient(90deg, var(--accent), var(--accent2));
+  color: #FFFFFF;
+  font-weight: bold;
+  padding: 4px 8px;
+  margin: -4px -4px 8px -4px;
+  text-shadow: 1px 1px 0 #000000;
+}
+/* Win95: скроллбар */
+[data-theme="win95"]::-webkit-scrollbar,
+[data-theme="win95"] *::-webkit-scrollbar {
+  width: 16px;
+  height: 16px;
+}
+[data-theme="win95"]::-webkit-scrollbar-track,
+[data-theme="win95"] *::-webkit-scrollbar-track {
+  background: #C0C0C0;
+  border: 1px solid #808080;
+}
+[data-theme="win95"]::-webkit-scrollbar-thumb,
+[data-theme="win95"] *::-webkit-scrollbar-thumb {
+  background: var(--bg);
+  border: 2px solid;
+  border-color: #FFFFFF #808080 #808080 #FFFFFF;
+  box-shadow: 1px 1px 0 #000000;
+}
+[data-theme="win95"]::-webkit-scrollbar-thumb:hover,
+[data-theme="win95"] *::-webkit-scrollbar-thumb:hover {
+  background: #D4D4D4;
+}
+[data-theme="win95"]::-webkit-scrollbar-thumb:active,
+[data-theme="win95"] *::-webkit-scrollbar-thumb:active {
+  border-color: #808080 #FFFFFF #FFFFFF #808080;
+}
+[data-theme="win95"]::-webkit-scrollbar-button,
+[data-theme="win95"] *::-webkit-scrollbar-button {
+  background: var(--bg);
+  border: 2px solid;
+  border-color: #FFFFFF #808080 #808080 #FFFFFF;
+  box-shadow: 1px 1px 0 #000000;
+  height: 16px;
+  width: 16px;
+}
+/* Win95: иконки в навигации — чёрные */
+[data-theme="win95"] .nav-icon,
+[data-theme="win95"] .btn-icon {
+  stroke: var(--text);
+}
+[data-theme="win95"] #nav button.active .nav-icon,
+[data-theme="win95"] .btn.accent .btn-icon {
+  stroke: #FFFFFF;
+}
+/* Win95: эффект мигания курсора как в DOS */
+[data-theme="win95"] #page-head h1::after {
+  content: "_";
+  animation: win95-blink 1s step-end infinite;
+  color: #FFFFFF;
+}
+@keyframes win95-blink {
+  50% { opacity: 0; }
+}
+/* Win95: активное имя */
+[data-theme="win95"] .active-name {
+  background: #FFFFFF;
+  border: 2px solid;
+  border-color: #808080 #FFFFFF #FFFFFF #808080;
+  padding: 4px 8px;
+  box-shadow: inset 1px 1px 0 #000000;
+}
+/* Win95: строка конфига */
+[data-theme="win95"] .cfg-row {
+  background: #FFFFFF;
+  border: 1px solid #808080;
+  border-radius: 0;
+  margin-bottom: 2px;
+  padding: 4px 8px;
+}
+[data-theme="win95"] .cfg-row:hover {
+  background: #E0E0E0;
+}
+/* Win95: звёздочка избранного */
+[data-theme="win95"] .cfg-row .star {
+  color: #808080;
+}
+[data-theme="win95"] .cfg-row .star.on {
+  color: var(--yellow);
+}
+/* Win95: строка домена */
+[data-theme="win95"] .dom-row {
+  background: #FFFFFF;
+  border: 1px solid #808080;
+  border-radius: 0;
+  padding: 4px 8px;
+}
+[data-theme="win95"] .dom-row:hover {
+  background: #E0E0E0;
+}
+[data-theme="win95"] .dom-row.sel {
+  background: var(--accent);
+  color: #FFFFFF;
+}
+/* Win95: label row */
+[data-theme="win95"] label.row {
+  background: var(--bg);
+  border: 1px solid transparent;
+  padding: 4px 8px;
+}
+[data-theme="win95"] label.row:hover {
+  border-color: #808080;
+}
+/* Win95: sep */
+[data-theme="win95"] .sep {
+  background: #808080;
+  height: 2px;
+  box-shadow: 0 1px 0 #FFFFFF;
+}
+/* Win95: brick-strip скрыть для win95 */
+[data-theme="win95"] .brick-strip {
+  display: none;
+}
+/* Win95: brand-fire — иконка Windows */
+[data-theme="win95"] .brand-fire {
+  background: var(--accent);
+  color: #FFFFFF;
+  border: 2px solid;
+  border-color: #4040FF #000060 #000060 #4040FF;
+}
+
+/* ---------- Quick Actions Dropdown ---------- */
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.quick-actions-wrap {
+  position: relative;
+}
+.quick-actions-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 8px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.5);
+  min-width: 240px;
+  z-index: 50;
+  padding: 8px 0;
+}
+.quick-actions-dropdown.hidden {
+  display: none;
+}
+.qa-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 16px;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background .15s;
+}
+.qa-btn:hover {
+  background: var(--card2);
+}
+.qa-btn:active {
+  background: var(--accent-deep);
+}
+.qa-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+/* Quick Actions: тема Win95 */
+[data-theme="win95"] .quick-actions-dropdown {
+  background: var(--bg);
+  border: 2px solid;
+  border-color: #FFFFFF #808080 #808080 #FFFFFF;
+  border-radius: 0;
+  box-shadow: 2px 2px 0 #000000;
+}
+[data-theme="win95"] .qa-btn {
+  border-bottom: 1px solid #808080;
+}
+[data-theme="win95"] .qa-btn:hover {
+  background: #D4D4D4;
+}
+[data-theme="win95"] .qa-btn:active {
+  background: var(--accent);
+  color: #FFFFFF;
+}
+
+/* ---------- Config Search ---------- */
+.cfg-search-wrap {
+  position: relative;
+  margin-bottom: 8px;
+}
+.cfg-search {
+  width: 100%;
+  padding: 8px 32px 8px 32px;
+  font-size: 13px;
+  background: var(--card2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  transition: border-color .2s, box-shadow .2s;
+}
+.cfg-search:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-deep);
+}
+.cfg-search::placeholder {
+  color: var(--muted);
+}
+.cfg-search-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+  pointer-events: none;
+}
+/* Config Search: тема Win95 */
+[data-theme="win95"] .cfg-search {
+  background: #FFFFFF;
+  border: 2px solid;
+  border-color: #808080 #FFFFFF #FFFFFF #808080;
+  border-radius: 0;
+  box-shadow: inset 1px 1px 0 #000000;
+}
+[data-theme="win95"] .cfg-search:focus {
+  outline: 1px dotted var(--text);
+  box-shadow: none;
+}

@@ -9,3 +9,10 @@ Thumbs.db
 .DS_Store
 .vscode/
 .idea/
+# Portable builds (publish as release assets, not in repo)
+portable/*.exe
+tools/portable/*.exe
+# Build artifacts
+tools/portable/stage/
+# External zapret bundle (not part of manager source)
+zapret-discord-youtube-main/

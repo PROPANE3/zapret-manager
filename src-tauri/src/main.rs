@@ -401,7 +401,7 @@ fn resource_state() -> zapret::ResourceStat {
 fn export_report() -> Result<CmdResult, String> {
     let cfg = config::load();
     let mut l: Vec<String> = vec![
-        "# Отчёт Zapret Manager v2.0.3".into(),
+        "# Отчёт Zapret Manager v2.0.4".into(),
         String::new(),
         format!("Время: {}", ts_now()),
         format!("Корень zapret: `{}`", cfg.zapret_root),

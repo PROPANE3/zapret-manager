@@ -377,10 +377,27 @@ function shortBat(b) {
 async function refreshConfigs() {
   const list = await api("list_configs");
   S.configs = list;
+  renderConfigList();
+}
+
+function renderConfigList() {
   const box = $("cfg-list");
+  if (!box) return;
   box.innerHTML = "";
-  if (!list.length) { box.innerHTML = `<div class="muted">! Конфиги не найдены</div>`; return; }
-  for (const c of list) {
+  
+  // Получаем поисковый запрос
+  const searchInput = $("cfg-search");
+  const query = searchInput ? searchInput.value.trim().toLowerCase() : "";
+  
+  // Фильтруем конфиги
+  const filtered = query
+    ? S.configs.filter((c) => c.name.toLowerCase().includes(query) || c.display.toLowerCase().includes(query))
+    : S.configs;
+  
+  if (!S.configs.length) { box.innerHTML = `<div class="muted">! Конфиги не найдены</div>`; return; }
+  if (!filtered.length && query) { box.innerHTML = `<div class="muted">Ничего не найдено по запросу «${esc(query)}»</div>`; return; }
+  
+  for (const c of filtered) {
     if (!(c.name in S.checked)) S.checked[c.name] = true;
     const fav = (S.cfg.fav_configs || []).includes(c.name);
     const row = document.createElement("div");
@@ -413,6 +430,24 @@ async function refreshConfigs() {
     termTypeListText(box, ".cfg-row .nm", 12);
   }
 }
+
+// Инициализация поиска конфигов
+(function initConfigSearch() {
+  const searchInput = $("cfg-search");
+  if (!searchInput) return;
+  
+  searchInput.addEventListener("input", () => {
+    renderConfigList();
+  });
+  
+  // Очистка поиска по Escape
+  searchInput.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      searchInput.value = "";
+      renderConfigList();
+    }
+  });
+})();
 function selectedConfigs() { return S.configs.map((c) => c.name).filter((n) => S.checked[n]); }
 
 /* ---------- проверка ---------- */
@@ -2070,6 +2105,89 @@ async function boot() {
     if (dt) dt.textContent = new Date().toLocaleDateString("ru-RU");
   }, 1000);
 }
+
+/* ---------- Quick Actions Dropdown ---------- */
+(function initQuickActions() {
+  const btn = $("btn-quick-actions");
+  const dropdown = $("quick-actions-dropdown");
+  if (!btn || !dropdown) return;
+  
+  // Открытие/закрытие dropdown
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    dropdown.classList.toggle("hidden");
+  });
+  
+  // Закрытие при клике вне dropdown
+  document.addEventListener("click", (e) => {
+    if (!dropdown.contains(e.target) && e.target !== btn) {
+      dropdown.classList.add("hidden");
+    }
+  });
+  
+  // Обработчики действий
+  dropdown.querySelectorAll(".qa-btn").forEach((b) => {
+    b.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const action = b.dataset.action;
+      dropdown.classList.add("hidden");
+      
+      try {
+        switch (action) {
+          case "restart-svc":
+            // Перезапустить службу или активный конфиг
+            if (!confirm("Перезапустить службу или активный конфиг?")) return;
+            const st = await api("get_service_status").catch(() => null);
+            if (st && (st.zapret === "RUNNING" || st.zapret === "STOPPED")) {
+              const r = await api("restart_service_cmd");
+              toast("Перезапуск", r.msg, r.ok ? "good" : "bad");
+            } else if (S.cfg.active_config) {
+              const r = await api("restart_standalone_cmd", { bat: S.cfg.active_config });
+              toast("Перезапуск", r.msg, r.ok ? "good" : "bad");
+            } else {
+              toast("Перезапуск", "Нет активного конфига", "bad");
+            }
+            refreshActiveBar();
+            break;
+            
+          case "flush-dns":
+            // Сбросить DNS-кэш
+            const r = await api("flush_dns");
+            toast("DNS-кэш", r.msg, r.ok ? "good" : "bad");
+            break;
+            
+          case "check-active":
+            // Проверить активный конфиг
+            const bat = S.cfg.active_config;
+            if (!bat) {
+              toast("Проверка", "Нет активного конфига", "bad");
+              return;
+            }
+            startCheck([bat]);
+            break;
+            
+          case "open-zapret":
+            // Открыть папку zapret
+            const root = S.cfg.zapret_root;
+            if (!root) {
+              toast("Папка zapret", "Папка zapret не указана", "bad");
+              return;
+            }
+            await api("open_url", { url: "file:///" + root.replace(/\\/g, "/") });
+            break;
+            
+          case "open-data":
+            // Открыть папку данных
+            await api("open_data_folder");
+            break;
+        }
+      } catch (err) {
+        toast("Ошибка", String(err?.message ?? err), "bad");
+      }
+    });
+  });
+})();
+
 document.addEventListener("DOMContentLoaded", () => boot().catch((e) => {
   // НЕ затираем body: иначе пропадают вкладки. Показываем тост + статус.
   try {
