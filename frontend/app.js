@@ -30,6 +30,108 @@ const S = {
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
+/* ---------- Ping Graph (Sparkline) ---------- */
+const PingGraph = {
+  canvas: null,
+  ctx: null,
+  maxPoints: 60, // 60 точек = 5 минут при обновлении каждые 5 сек
+  init() {
+    this.canvas = $("ping-graph");
+    if (!this.canvas) return;
+    this.ctx = this.canvas.getContext("2d");
+    // Установить размер canvas равным размеру элемента
+    const rect = this.canvas.getBoundingClientRect();
+    this.canvas.width = rect.width * window.devicePixelRatio;
+    this.canvas.height = rect.height * window.devicePixelRatio;
+    this.ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+  },
+  draw() {
+    if (!this.ctx) this.init();
+    if (!this.ctx) return;
+    
+    const w = this.canvas.width / window.devicePixelRatio;
+    const h = this.canvas.height / window.devicePixelRatio;
+    const ctx = this.ctx;
+    
+    // Очистить
+    ctx.clearRect(0, 0, w, h);
+    
+    // Получить данные
+    const dsHist = S.pingHist.DiscordMain || [];
+    const ytHist = S.pingHist.YouTubeWeb || [];
+    
+    if (dsHist.length === 0 && ytHist.length === 0) {
+      // Нарисовать текст "Нет данных"
+      ctx.fillStyle = "rgba(128,128,128,0.5)";
+      ctx.font = "12px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("Нет данных", w / 2, h / 2);
+      return;
+    }
+    
+    // Найти макс значение для масштабирования
+    const allValues = [...dsHist, ...ytHist].filter(v => v != null);
+    if (allValues.length === 0) return;
+    
+    const maxVal = Math.max(...allValues, 100); // минимум 100мс
+    const padding = 4;
+    const graphH = h - padding * 2;
+    
+    // Рисовать сетку
+    ctx.strokeStyle = "rgba(128,128,128,0.2)";
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i++) {
+      const y = padding + (graphH * i / 4);
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+      ctx.stroke();
+    }
+    
+    // Функция для рисования линии
+    const drawLine = (data, color) => {
+      if (data.length < 2) return;
+      
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      
+      let started = false;
+      data.forEach((val, i) => {
+        if (val == null) return;
+        const x = (i / (this.maxPoints - 1)) * w;
+        const y = padding + graphH - (val / maxVal) * graphH;
+        
+        if (!started) {
+          ctx.moveTo(x, y);
+          started = true;
+        } else {
+          ctx.lineTo(x, y);
+        }
+      });
+      
+      if (started) ctx.stroke();
+      
+      // Нарисовать последнюю точку
+      const lastVal = data[data.length - 1];
+      if (lastVal != null) {
+        const x = ((data.length - 1) / (this.maxPoints - 1)) * w;
+        const y = padding + graphH - (lastVal / maxVal) * graphH;
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(x, y, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    };
+    
+    // Рисовать линии
+    drawLine(dsHist, "#3B82F6"); // Discord - синий
+    drawLine(ytHist, "#EF4444"); // YouTube - красный
+  }
+};
+
 /* ---------- звук (WebAudio, вместо winsound) ---------- */
 let AC = null;
 function beep(kind) {
@@ -341,6 +443,8 @@ async function refreshActiveBar() {
       el.textContent = `${tag}: ${fmtPing(p.ping_ms)}${jit}`;
       el.style.color = pingColor(p.ping_ms);
     }
+    // Обновить график пингов
+    PingGraph.draw();
   } catch (_) {}
   // vpn (кэш 60 с — powershell тяжёлый)
   try {
@@ -571,25 +675,6 @@ async function applyBat(bat) {
 $("btn-apply-sel").addEventListener("click", () => {
   if (!S.selGrade) { toast("Применение", "Выберите конфиг в таблице результатов", "bad"); return; }
   applyBat(S.selGrade);
-});
-$("btn-remove-svc").addEventListener("click", async () => {
-  if (!confirm("Удалить службу zapret и остановить обход?")) return;
-  const r = await api("remove_service_cmd");
-  toast("Служба", r.msg, r.ok ? "good" : "bad");
-  refreshActiveBar();
-});
-$("btn-restart-svc").addEventListener("click", async () => {
-  const st = await api("get_service_status").catch(() => null);
-  if (st && (st.zapret === "RUNNING" || st.zapret === "STOPPED")) {
-    if (!confirm("Перезапустить службу zapret (активный конфиг)?")) return;
-    const r = await api("restart_service_cmd");
-    toast("Перезапуск", r.msg, r.ok ? "good" : "bad");
-  } else if (S.cfg.active_config) {
-    if (!confirm(`Перезапустить ${S.cfg.active_config} (без службы)?`)) return;
-    const r = await api("restart_standalone_cmd", { bat: S.cfg.active_config });
-    toast("Перезапуск", r.msg, r.ok ? "good" : "bad");
-  } else toast("Перезапуск", "Нет активного конфига", "bad");
-  refreshActiveBar();
 });
 
 /* ---------- параметры ---------- */

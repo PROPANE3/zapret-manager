@@ -720,7 +720,7 @@ select { background: var(--card2); color: var(--text); border: 1px solid var(--b
   background-attachment: fixed;
   background-color: transparent;
 }
-/* матовое стекло для всех панелей/контролов — лёгкое размытие содержания окна */
+/* матовое стекло для всех панелей/контролов — лёгкое размытие, видно рабочий стол */
 [data-theme="glass"] #sidebar,
 [data-theme="glass"] .card,
 [data-theme="glass"] .pill,
@@ -733,12 +733,12 @@ select { background: var(--card2); color: var(--text); border: 1px solid var(--b
 [data-theme="glass"] textarea,
 [data-theme="glass"] select,
 [data-theme="glass"] .btn {
-  -webkit-backdrop-filter: blur(12px) saturate(160%);
-  backdrop-filter: blur(12px) saturate(160%);
+  -webkit-backdrop-filter: blur(8px) saturate(140%);
+  backdrop-filter: blur(8px) saturate(140%);
 }
 [data-theme="glass"] #sidebar,
 [data-theme="glass"] .card {
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 10px 32px rgba(0,0,0,.28);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.25), 0 8px 24px rgba(0,0,0,.20);
 }
 [data-theme="glass"] .card { border-radius: 18px; }
 [data-theme="glass"] #sidebar { border-right: 1px solid rgba(255,255,255,.16); border-image: none; box-shadow: inset 0 1px 0 rgba(255,255,255,.3), 0 0 40px rgba(0,0,0,.2); }
@@ -774,16 +774,16 @@ select { background: var(--card2); color: var(--text); border: 1px solid var(--b
   --fog-dx: 0px; --fog-dy: 0px;
 }
 [data-theme="fog"] {
-  --bg: #050B1C; --sidebar: #081226; --card: rgba(11,22,45,.72); --card2: #0F1E38;
+  --bg: #050B1C; --sidebar: #081226; --card: rgba(11,22,45,.85); --card2: #0F1E38;
   --border: #1E3A6E; --text: #E4EEFF; --muted: #7D93BE;
   --accent: #3B82F6; --accent-hover: #60A5FA; --accent-deep: #1D4ED8; --accent2: #7CC4FF;
   --green: #35D07F; --yellow: #F5A524; --red: #FF2E2E;
 }
 /* контент держим выше слоя тумана, но фон пропускает его в просветах */
 [data-theme="fog"] #layout, [data-theme="fog"] #main, [data-theme="fog"] #sidebar { position: relative; z-index: 1; }
-/* туман хорошо виден: панели почти прозрачные и НЕ размывают фон */
-[data-theme="fog"] .card { background: rgba(13,26,52,.30); -webkit-backdrop-filter: none; backdrop-filter: none; }
-[data-theme="fog"] #sidebar { background: rgba(8,18,38,.28); -webkit-backdrop-filter: none; backdrop-filter: none; }
+/* туман хорошо виден: панели полупрозрачные, но читаемые */
+[data-theme="fog"] .card { background: rgba(13,26,52,.55); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); }
+[data-theme="fog"] #sidebar { background: rgba(8,18,38,.50); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); }
 [data-theme="fog"] .btn:hover { box-shadow: 0 0 14px var(--accent-deep); }
 [data-theme="fog"] .cfg-row:hover { background: rgba(15,30,56,.8); }
 
@@ -1301,4 +1301,46 @@ select { background: var(--card2); color: var(--text); border: 1px solid var(--b
 [data-theme="win95"] .cfg-search:focus {
   outline: 1px dotted var(--text);
   box-shadow: none;
+}
+
+/* ---------- Ping Graph ---------- */
+.ping-graph-wrap {
+  margin-top: 12px;
+  background: var(--card2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  position: relative;
+}
+#ping-graph {
+  width: 100%;
+  height: 80px;
+  display: block;
+}
+.ping-graph-legend {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.ping-graph-legend span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.ping-graph-legend .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+/* Ping Graph: тема Win95 */
+[data-theme="win95"] .ping-graph-wrap {
+  background: #FFFFFF;
+  border: 2px solid;
+  border-color: #808080 #FFFFFF #FFFFFF #808080;
+  border-radius: 0;
+  box-shadow: inset 1px 1px 0 #000000;
 }

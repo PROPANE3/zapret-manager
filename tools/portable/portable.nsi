@@ -1,11 +1,11 @@
-﻿; Zapret Manager Portable 2.0.4
+﻿; Zapret Manager Portable 2.0.5
 ; Один файл: приложение + zapret + авто-настройка (раскрывается в папку, без админа)
 Unicode true
 
 !include "MUI2.nsh"
 
 Name "Zapret Manager Portable"
-OutFile "Zapret-Manager-Portable-2.0.4.exe"
+OutFile "Zapret-Manager-Portable-2.0.5.exe"
 InstallDir "$DESKTOP\Zapret Manager Portable"
 InstallDirRegKey HKCU "Software\ZapretManagerPortable" "InstallDir"
 RequestExecutionLevel user
@@ -14,10 +14,10 @@ XPStyle on
 CRCCheck on
 ShowInstDetails nevershow
 
-VIProductVersion "2.0.4.0"
+VIProductVersion "2.0.5.0"
 VIAddVersionKey "ProductName" "Zapret Manager Portable"
-VIAddVersionKey "FileDescription" "Zapret Manager Portable 2.0.4 — приложение + zapret в одном файле"
-VIAddVersionKey "ProductVersion" "2.0.4"
+VIAddVersionKey "FileDescription" "Zapret Manager Portable 2.0.5 — приложение + zapret в одном файле"
+VIAddVersionKey "ProductVersion" "2.0.5"
 VIAddVersionKey "CompanyName" "PROPANE3"
 
 !define MUI_ABORTWARNING
